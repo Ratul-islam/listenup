@@ -1,15 +1,34 @@
 import type { FastifyPluginAsync } from 'fastify'
+import { env } from '../../config/env.js'
 import { LocalStorage } from '../../lib/storage/local-storage.js'
-import { verifyFileToken } from '../../lib/storage/file-token.js'
+import { uploadTokenSubject, verifyFileToken } from '../../lib/storage/file-token.js'
 import { AppError } from '../../utils/AppError.js'
 
 const MIME: Record<string, string> = { mp3: 'audio/mpeg', wav: 'audio/wav', pdf: 'application/pdf', txt: 'text/plain' }
 
 /**
- * Serves locally stored files behind short-lived signed links (the S3 driver
- * uses presigned URLs instead). Supports Range requests for audio seeking.
+ * Local-disk stand-in for presigned S3 links (dev only): GET serves files
+ * behind short-lived signed links, with Range support for audio seeking;
+ * PUT accepts uploads behind signed links that fix the type and size.
  */
 const filesRoutes: FastifyPluginAsync = async (app) => {
+  // Upload bodies arrive raw (application/pdf, image/jpeg…); only this plugin parses them
+  app.addContentTypeParser('*', { parseAs: 'buffer', bodyLimit: env.MAX_UPLOAD_MB * 1024 * 1024 }, (_req, body, done) => done(null, body))
+
+  app.put<{ Params: { '*': string }; Querystring: { exp?: string; size?: string; sig?: string } }>('/*', async (request, reply) => {
+    const key = decodeURIComponent(request.params['*'])
+    const exp = Number(request.query.exp)
+    const size = Number(request.query.size)
+    const type = request.headers['content-type'] ?? ''
+    const body = request.body as Buffer
+    if (!request.query.sig || !Number.isFinite(exp) || !verifyFileToken(uploadTokenSubject(key, type, size), exp, request.query.sig)) {
+      throw new AppError('This upload link has expired or does not match the file', 403, 'INVALID_FILE_LINK')
+    }
+    if (!Buffer.isBuffer(body) || body.length !== size) throw new AppError('The file size does not match', 403, 'INVALID_FILE_LINK')
+    await new LocalStorage().put(key, body)
+    return reply.code(200).send()
+  })
+
   app.get<{ Params: { '*': string }; Querystring: { exp?: string; sig?: string } }>('/*', async (request, reply) => {
     const key = decodeURIComponent(request.params['*'])
     const exp = Number(request.query.exp)

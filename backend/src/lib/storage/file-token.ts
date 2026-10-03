@@ -12,3 +12,6 @@ export function signFileToken(key: string, exp: number) {
 export function verifyFileToken(key: string, exp: number, sig: string) {
   return exp > Date.now() / 1000 && safeEqual(signFileToken(key, exp), sig)
 }
+
+/** What an upload link permits: this key, this type, this many bytes */
+export const uploadTokenSubject = (key: string, contentType: string, sizeBytes: number) => `put:${key}:${contentType}:${sizeBytes}`

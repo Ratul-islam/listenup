@@ -18,8 +18,15 @@ export interface Storage {
   exists(key: string): Promise<boolean>
   delete(key: string): Promise<void>
   deletePrefix(prefix: string): Promise<void>
+  /** Size in bytes, or null if there's no such file */
+  size(key: string): Promise<number | null>
   /** Time-limited URL a client can fetch without auth headers */
   signedUrl(key: string, ttlSeconds: number): Promise<string>
+  /**
+   * Time-limited URL a client can PUT exactly this file to (that type, that size),
+   * so large uploads go straight to storage instead of through the API
+   */
+  signedUploadUrl(key: string, contentType: string, sizeBytes: number, ttlSeconds: number): Promise<string>
 }
 
 export const storage: Storage = env.STORAGE_DRIVER === 's3' ? new S3Storage() : new LocalStorage()

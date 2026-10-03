@@ -19,6 +19,9 @@ export class S3Storage implements Storage {
     region: env.S3_REGION,
     endpoint: env.S3_ENDPOINT,
     forcePathStyle: Boolean(env.S3_ENDPOINT),
+    // Otherwise signed upload links carry a checksum of an empty body, which strict S3 hosts reject
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
     credentials: { accessKeyId: env.S3_ACCESS_KEY_ID ?? '', secretAccessKey: env.S3_SECRET_ACCESS_KEY ?? '' },
   })
   private readonly bucket = env.S3_BUCKET ?? ''
@@ -35,6 +38,12 @@ export class S3Storage implements Storage {
   async get(key: string) {
     const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }))
     return Buffer.from(await res.Body!.transformToByteArray())
+  }
+
+  size(key: string) {
+    return this.client
+      .send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }))
+      .then((head) => head.ContentLength ?? 0, () => null)
   }
 
   exists(key: string) {
@@ -61,5 +70,14 @@ export class S3Storage implements Storage {
 
   signedUrl(key: string, ttlSeconds: number) {
     return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), { expiresIn: ttlSeconds })
+  }
+
+  /** Content length and type are signed, so the client can't send a bigger or different file */
+  signedUploadUrl(key: string, contentType: string, sizeBytes: number, ttlSeconds: number) {
+    return getSignedUrl(
+      this.client,
+      new PutObjectCommand({ Bucket: this.bucket, Key: key, ContentType: contentType, ContentLength: sizeBytes }),
+      { expiresIn: ttlSeconds, signableHeaders: new Set(['content-type']) },
+    )
   }
 }

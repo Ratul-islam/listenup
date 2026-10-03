@@ -46,7 +46,11 @@ const envSchema = z
 
     MAX_UPLOAD_MB: z.coerce.number().int().positive().default(25),
     FREE_TIER_MONTHLY_CHARS: z.coerce.number().int().positive().default(300_000),
-    // Run queue workers in this process (split API and workers in production if needed)
+    PORT: z.coerce.number().int().positive().default(8000),
+    // Connections per process; keep it small where many instances run (e.g. Vercel)
+    DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
+    // Run queue workers in this process. Local dev: true. Vercel API: false (a separate
+    // always-on process runs `node dist/worker.js` instead)
     RUN_WORKERS: z
       .enum(['true', 'false'])
       .default('true')

@@ -1,8 +1,18 @@
 import { PgBoss } from 'pg-boss'
 import { env } from '../config/env.js'
 
-/** Background jobs stored in Postgres (schema "pgboss"), so no extra infrastructure is needed */
-export const queue = new PgBoss({ connectionString: env.DATABASE_URL, schema: 'pgboss' })
+/**
+ * Background jobs stored in Postgres (schema "pgboss"), so no extra infrastructure is needed.
+ * An API-only process (RUN_WORKERS=false) just sends jobs; maintenance and cron schedules
+ * run in the worker process.
+ */
+export const queue = new PgBoss({
+  connectionString: env.DATABASE_URL,
+  schema: 'pgboss',
+  supervise: env.RUN_WORKERS,
+  schedule: env.RUN_WORKERS,
+  max: env.RUN_WORKERS ? 10 : 2,
+})
 
 export const QUEUES = {
   processDocument: 'document.process',

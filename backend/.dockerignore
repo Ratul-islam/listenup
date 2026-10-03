@@ -1,0 +1,13 @@
+# Keep secrets and local state out of the image; hosts provide env vars at runtime
+.env
+.env.*
+!.env.example
+node_modules
+dist
+src/generated
+storage
+.tmp-test
+*.log
+Dockerfile*
+docker-compose*.yml
+.dockerignore

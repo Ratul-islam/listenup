@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { ALLOWED_UPLOADS } from '../../config/constants.js'
 import type { Document, DocumentChunk, PlaybackState } from '../../generated/prisma/client.js'
@@ -9,8 +10,9 @@ import type { Lang } from '../ingestion/text/language.js'
 import { readExpressions } from '../expressions/expression-catalog.js'
 import { planFor } from '../tts/tts.service.js'
 import type { VoicesService } from '../voices/voices.service.js'
+import { env } from '../../config/env.js'
 import { CATEGORY_KINDS, type DocumentsRepository } from './documents.repository.js'
-import type { ListQuery, TextBody, UpdateBody, UrlBody } from './documents.schema.js'
+import type { ListQuery, TextBody, UpdateBody, UploadCompleteBody, UploadStartBody, UrlBody } from './documents.schema.js'
 
 type WithPlayback = Document & { playback?: PlaybackState[] }
 
@@ -52,6 +54,18 @@ export function toSummary(doc: WithPlayback) {
 }
 
 const sourceKey = (userId: string, documentId: string, ext: string) => `documents/${userId}/${documentId}/source.${ext}`
+
+const UPLOAD_LINK_TTL_SECONDS = 15 * 60
+
+/** Extension and kind of an upload, by file name */
+function uploadType(fileName: string) {
+  const ext = path.extname(fileName).slice(1).toLowerCase()
+  const type = ALLOWED_UPLOADS[ext]
+  if (!type) {
+    throw new AppError("That file type isn't supported yet. Try PDF, Word, ePub, text or a photo.", 415, 'UNSUPPORTED_FILE')
+  }
+  return { ext, ...type }
+}
 
 export class DocumentsService {
   constructor(
@@ -98,27 +112,47 @@ export class DocumentsService {
     return toSummary(await this.owned(userId, id))
   }
 
-  async upload(userId: string, file: { filename: string; mimetype: string; buffer: Buffer }) {
-    const ext = path.extname(file.filename).slice(1).toLowerCase()
-    const type = ALLOWED_UPLOADS[ext]
-    if (!type) {
-      throw new AppError('That file type isn\'t supported yet. Try PDF, Word, ePub, text or a photo.', 415, 'UNSUPPORTED_FILE')
+  /**
+   * Uploads go straight from the phone to storage (Vercel caps request bodies
+   * at 4.5 MB): this hands out a link that accepts exactly this file. The
+   * upload id becomes the document's id once the upload is completed.
+   */
+  async startUpload(userId: string, { fileName, size }: UploadStartBody) {
+    const { ext, mime } = uploadType(fileName)
+    if (size > env.MAX_UPLOAD_MB * 1024 * 1024) {
+      throw new AppError(`That file is too large to import (the limit is ${env.MAX_UPLOAD_MB} MB)`, 413, 'FILE_TOO_LARGE')
     }
-    if (!file.buffer.length) throw new AppError('That file is empty', 400, 'EMPTY_FILE')
+    const uploadId = randomUUID()
+    const url = await storage.signedUploadUrl(sourceKey(userId, uploadId, ext), mime, size, UPLOAD_LINK_TTL_SECONDS)
+    return { uploadId, url, method: 'PUT' as const, headers: { 'Content-Type': mime } }
+  }
 
-    const title = path.basename(file.filename, path.extname(file.filename)).replace(/[_-]+/g, ' ').trim() || 'Untitled'
+  /** The file is in storage: create the document and start reading it. Safe to repeat. */
+  async completeUpload(userId: string, uploadId: string, { fileName }: UploadCompleteBody) {
+    const existing = await this.documentsRepository.findOwned(userId, uploadId)
+    if (existing) return toSummary(existing)
+
+    const { ext, kind, mime } = uploadType(fileName)
+    const fileKey = sourceKey(userId, uploadId, ext)
+    const size = await storage.size(fileKey)
+    if (size === null) throw new AppError("The upload didn't finish. Try again.", 400, 'UPLOAD_NOT_FOUND')
+    if (size === 0) {
+      await storage.delete(fileKey)
+      throw new AppError('That file is empty', 400, 'EMPTY_FILE')
+    }
+
+    const title = path.basename(fileName, path.extname(fileName)).replace(/[_-]+/g, ' ').trim() || 'Untitled'
     const doc = await this.documentsRepository.create({
+      id: uploadId,
       userId,
       title: title.slice(0, 200),
-      kind: type.kind,
-      fileName: file.filename.slice(0, 255),
-      mimeType: type.mime,
+      kind,
+      fileName: fileName.slice(0, 255),
+      mimeType: mime,
+      fileKey,
     })
-    const fileKey = sourceKey(userId, doc.id, ext)
-    await storage.put(fileKey, file.buffer, type.mime)
-    const saved = await this.documentsRepository.update(doc.id, { fileKey })
     await this.enqueue({ documentId: doc.id })
-    return toSummary(saved)
+    return toSummary(doc)
   }
 
   async createFromText(userId: string, { title, text }: TextBody) {

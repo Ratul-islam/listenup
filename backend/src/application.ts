@@ -5,19 +5,17 @@ import { fileURLToPath } from "node:url";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import { connectDB, disconnectDB } from "./config/db.js";
 import { API_PREFIX } from "./config/constants.js";
-import { env, ttsProviderName } from "./config/env.js";
+import { env, isProduction, ttsProviderName } from "./config/env.js";
 import { queue, startQueue } from "./lib/queue.js";
-import { startExportsWorker } from "./modules/exports/exports.worker.js";
-import { startExpressionsWorker } from "./modules/expressions/expressions.worker.js";
-import { startIngestionWorker } from "./modules/ingestion/ingestion.worker.js";
-import { startUsersWorker } from "./modules/users/users.worker.js";
+import { startWorkers } from "./workers.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export async function buildApp() {
-  const app = Fastify({ logger: true });
+  // Behind a proxy in production (Vercel, Railway…): take the client IP from X-Forwarded-For, so rate limits are per user
+  const app = Fastify({ logger: true, trustProxy: isProduction });
 
   // Zod schemas on routes validate request bodies/params/querystrings
   app.setValidatorCompiler(validatorCompiler);
@@ -28,12 +26,7 @@ export async function buildApp() {
 
   // Background jobs (document processing) live in Postgres via pg-boss
   await startQueue();
-  if (env.RUN_WORKERS) {
-    await startIngestionWorker();
-    await startExpressionsWorker();
-    await startUsersWorker();
-    await startExportsWorker();
-  }
+  if (env.RUN_WORKERS) await startWorkers();
   app.addHook("onClose", () => queue.stop({ graceful: true }));
   app.log.info(`Speech provider: ${ttsProviderName}`);
 
@@ -42,6 +35,9 @@ export async function buildApp() {
     encapsulate: false, 
   });
 
+  // For hosts' health checks (no auth, no database work)
+  app.get(`${API_PREFIX}/health`, async () => ({ status: "ok" }));
+
   await app.register(AutoLoad, {
     dir: path.join(__dirname, "modules"),
     matchFilter:  (p) => /\.routes\.(ts|js)$/.test(p),
@@ -49,9 +45,7 @@ export async function buildApp() {
   });
 
 
-  app.ready(() => {
-    console.log(app.printRoutes());
-  });
+  if (!isProduction) app.ready(() => console.log(app.printRoutes()));
 
   return app;
 }

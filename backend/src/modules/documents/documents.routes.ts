@@ -11,6 +11,9 @@ import {
   reprocessBodySchema,
   textBodySchema,
   updateBodySchema,
+  uploadCompleteSchema,
+  uploadParamsSchema,
+  uploadStartSchema,
   urlBodySchema,
 } from './documents.schema.js'
 import { DocumentsService } from './documents.service.js'
@@ -24,7 +27,13 @@ const documentsRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.verifyAccess)
 
   app.get('/', { schema: { querystring: listQuerySchema } }, controller.list)
-  app.post('/upload', { config: importLimit }, controller.upload)
+  // Direct uploads: get a signed link, PUT the file to storage, then complete
+  app.post('/uploads', { schema: { body: uploadStartSchema }, config: importLimit }, controller.startUpload)
+  app.post(
+    '/uploads/:uploadId/complete',
+    { schema: { params: uploadParamsSchema, body: uploadCompleteSchema }, config: importLimit },
+    controller.completeUpload,
+  )
   app.post('/text', { schema: { body: textBodySchema }, config: importLimit }, controller.createFromText)
   app.post('/url', { schema: { body: urlBodySchema }, config: importLimit }, controller.createFromUrl)
   app.get('/:id', { schema: { params: idParamsSchema } }, controller.get)

@@ -1,0 +1,24 @@
+# Runs the backend from the Docker image, reading settings from .env.
+#   docker compose up -d worker        just the background worker (next to the API on Vercel)
+#   docker compose up -d               API on :8000 plus the worker (e.g. a VPS)
+services:
+  api:
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      RUN_WORKERS: "false"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["node", "dist/worker.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      RUN_WORKERS: "true"
+    restart: unless-stopped
+    # SIGTERM lets the current job finish (up to 25s) before stopping
+    stop_grace_period: 30s

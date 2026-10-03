@@ -1,10 +1,18 @@
-import { Directory, File, Paths } from 'expo-file-system';
+import { File, UploadType } from 'expo-file-system';
 
+import { ApiError } from '@/lib/api/api-error';
 import { api } from '@/lib/api/client';
 
 import type { Category, DocumentList, DocumentSummary, ReaderData, SortOrder } from '../types';
 
 const data = <T>(r: { data: T }) => r.data;
+
+interface UploadTicket {
+  uploadId: string;
+  url: string;
+  method: 'PUT';
+  headers: Record<string, string>;
+}
 
 export interface PickedFile {
   uri: string;
@@ -26,23 +34,21 @@ export const documentsApi = {
 
   get: (id: string) => api.get<{ document: DocumentSummary }>(`/documents/${id}`, { auth: true }).then((r) => r.data.document),
 
+  /**
+   * Direct upload: the API hands out a link that accepts exactly this file, the
+   * file goes straight to storage (natively streamed, so large PDFs never sit in
+   * JS memory, and the API's 4.5 MB body limit on Vercel doesn't apply), then
+   * the API is told it's there and starts reading it.
+   */
   upload: async (file: PickedFile) => {
-    // The global fetch is expo/fetch, which can't send React Native's { uri, name, type }
-    // descriptors, only expo-file-system Files. A File is named after its path and pickers
-    // cache under random names, so stage a copy under the original name (the server reads
-    // the type and title from it).
-    const dir = new Directory(Paths.cache, 'uploads', String(Date.now()));
-    dir.create({ intermediates: true });
-    try {
-      const staged = new File(dir, file.name.replace(/[/\\\0]/g, '_') || 'upload');
-      await new File(file.uri).copy(staged);
-      const form = new FormData();
-      form.append('file', staged);
-      const res = await api.upload<{ document: DocumentSummary }>('/documents/upload', form, { auth: true });
-      return res.data.document;
-    } finally {
-      dir.delete();
+    const source = new File(file.uri);
+    const { data: ticket } = await api.post<UploadTicket>('/documents/uploads', { fileName: file.name, size: source.size }, { auth: true });
+    const sent = await source.upload(ticket.url, { httpMethod: 'PUT', uploadType: UploadType.BINARY_CONTENT, headers: ticket.headers });
+    if (sent.status < 200 || sent.status >= 300) {
+      throw new ApiError("The upload didn't go through. Check your connection and try again.", sent.status, 'UPLOAD_FAILED');
     }
+    const { data } = await api.post<{ document: DocumentSummary }>(`/documents/uploads/${ticket.uploadId}/complete`, { fileName: file.name }, { auth: true });
+    return data.document;
   },
 
   fromText: (body: { title?: string; text: string }) =>

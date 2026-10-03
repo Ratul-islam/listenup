@@ -1,8 +1,18 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import { AppError } from '../../utils/AppError.js'
 import { sendSuccess } from '../../utils/responses.js'
 import type { DocumentsService } from './documents.service.js'
-import type { IdParams, ListQuery, ReaderQuery, ReprocessBody, TextBody, UpdateBody, UrlBody } from './documents.schema.js'
+import type {
+  IdParams,
+  ListQuery,
+  ReaderQuery,
+  ReprocessBody,
+  TextBody,
+  UpdateBody,
+  UploadCompleteBody,
+  UploadParams,
+  UploadStartBody,
+  UrlBody,
+} from './documents.schema.js'
 
 export class DocumentsController {
   constructor(private readonly documentsService: DocumentsService) {}
@@ -16,25 +26,13 @@ export class DocumentsController {
     return sendSuccess(reply, { data: { document } })
   }
 
-  upload = async (request: FastifyRequest, reply: FastifyReply) => {
-    const file = await request.file()
-    if (!file) throw new AppError('Choose a file to import', 400, 'NO_FILE')
+  startUpload = async (request: FastifyRequest<{ Body: UploadStartBody }>, reply: FastifyReply) => {
+    const data = await this.documentsService.startUpload(request.user.sub, request.body)
+    return sendSuccess(reply, { statusCode: 201, data })
+  }
 
-    let buffer: Buffer
-    try {
-      buffer = await file.toBuffer()
-    } catch (e) {
-      if ((e as { code?: string }).code === 'FST_REQ_FILE_TOO_LARGE') {
-        throw new AppError('That file is too large to import', 413, 'FILE_TOO_LARGE')
-      }
-      throw e
-    }
-
-    const document = await this.documentsService.upload(request.user.sub, {
-      filename: file.filename,
-      mimetype: file.mimetype,
-      buffer,
-    })
+  completeUpload = async (request: FastifyRequest<{ Params: UploadParams; Body: UploadCompleteBody }>, reply: FastifyReply) => {
+    const document = await this.documentsService.completeUpload(request.user.sub, request.params.uploadId, request.body)
     return sendSuccess(reply, { statusCode: 201, message: 'Import started', data: { document } })
   }
 

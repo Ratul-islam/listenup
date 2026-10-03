@@ -13,6 +13,20 @@ export const listQuerySchema = z.object({
 
 export const idParamsSchema = z.object({ id: z.uuid() })
 
+/** Step 1 of an upload: what the phone is about to send */
+export const uploadStartSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+  /** Bytes; the signed upload link only accepts exactly this size */
+  size: z.number().int().positive(),
+})
+
+/** Step 2: the file is in storage */
+export const uploadCompleteSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+})
+
+export const uploadParamsSchema = z.object({ uploadId: z.uuid() })
+
 export const textBodySchema = z.object({
   title: z.string().trim().max(200).optional(),
   text: z.string().trim().min(1, 'Add some text to listen to').max(MAX_PASTE_CHARS),
@@ -44,4 +58,7 @@ export type UrlBody = z.infer<typeof urlBodySchema>
 export type UpdateBody = z.infer<typeof updateBodySchema>
 export type ReprocessBody = z.infer<typeof reprocessBodySchema>
 export type IdParams = z.infer<typeof idParamsSchema>
+export type UploadStartBody = z.infer<typeof uploadStartSchema>
+export type UploadCompleteBody = z.infer<typeof uploadCompleteSchema>
+export type UploadParams = z.infer<typeof uploadParamsSchema>
 export type ReaderQuery = z.infer<typeof readerQuerySchema>
