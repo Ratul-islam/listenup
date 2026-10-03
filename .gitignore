@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Secrets and local settings (the .env.example files are committed)
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Backend
+# Prisma client, recreated by `pnpm db:generate`
+backend/src/generated/
+# Local file storage, only used when STORAGE_DRIVER=local
+backend/storage/
+.tmp-test/
+
+# Frontend (Expo)
+frontend/.expo/
+frontend/web-build/
+frontend/expo-env.d.ts
+.metro-health-check*
+# Native projects are generated from app.json (`npx expo prebuild` / `expo run:android`)
+frontend/android/
+frontend/ios/
+.kotlin/
+*.orig.*
+
+# Signing keys and certificates
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+
+# Logs
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+pnpm-debug.log*
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+# Personal Claude Code settings (the shared .claude/settings.json is committed)
+**/.claude/settings.local.json
+PHASES.md

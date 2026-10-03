@@ -1,0 +1,160 @@
+@import 'tailwindcss';
+@import 'uniwind';
+
+@import 'heroui-native/styles';
+
+@source '../node_modules/heroui-native/lib';
+
+/*
+ * ListenUp, calm edition: a soft lavender background, plain white surfaces
+ * and a single violet accent used everywhere, the player included.
+ * Periwinkle is kept for the brand mark; pink only as a faint background glow.
+ * Fonts are embedded natively by the expo-font plugin (see app.json).
+ */
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans';
+  --font-mono: 'JetBrains Mono';
+
+  --radius: 0.75rem;
+  --field-radius: 1.125rem;
+  --field-border-width: 1px;
+}
+
+@layer theme {
+  :root {
+    @variant light {
+      --background: #f5f3ff;
+      --foreground: #1b1c2e;
+
+      --surface: #ffffff;
+      --surface-foreground: var(--foreground);
+      --surface-secondary: #f4f1ff;
+      --surface-secondary-foreground: var(--foreground);
+      --surface-tertiary: #ebe8fb;
+      --surface-tertiary-foreground: var(--foreground);
+
+      --overlay: #ffffff;
+      --overlay-foreground: var(--foreground);
+
+      --muted: #64657a;
+
+      --default: #f0eefb;
+      --default-foreground: #1b1c2e;
+
+      --accent: #6a55e0;
+      --accent-foreground: #ffffff;
+
+      /* Soft violet wash for selected chips and active rows */
+      --accent-soft-bg: #efebff;
+      --accent-soft-fg: #4b3bb8;
+      /* Lighter violet for the wordmark and faint glows */
+      --periwinkle: #a597f5;
+
+
+      --field-background: #ffffff;
+      --field-foreground: #1b1c2e;
+      --field-placeholder: #9a9bb0;
+      --field-border: #e4e1f5;
+
+      --success: #16a06a;
+      --success-foreground: #ffffff;
+      --warning: #d98a0b;
+      --warning-foreground: #ffffff;
+      --danger: #d63c5e;
+      --danger-foreground: #ffffff;
+
+      --border: #ecebf5;
+      --separator: #e6e4f2;
+      --focus: #6a55e0;
+      --link: #5a46d0;
+
+      --cloud-top: #f1efff;
+      --cloud-mid: #faf9ff;
+      --cloud-bottom: #f3f1ff;
+      --glow-pink: #fbeaf6;
+    }
+
+    @variant dark {
+      --background: #10112a;
+      --foreground: #eceaff;
+
+      --surface: #1a1b3a;
+      --surface-foreground: var(--foreground);
+      --surface-secondary: #22234a;
+      --surface-secondary-foreground: var(--foreground);
+      --surface-tertiary: #2a2b57;
+      --surface-tertiary-foreground: var(--foreground);
+
+      --overlay: #1d1e40;
+      --overlay-foreground: var(--foreground);
+
+      --muted: #a3a3c4;
+
+      --default: #25264c;
+      --default-foreground: #eceaff;
+
+      --accent: #a99bff;
+      --accent-foreground: #10112a;
+
+      --accent-soft-bg: #2a2556;
+      --accent-soft-fg: #cfc6ff;
+      --periwinkle: #bfb4ff;
+
+
+      --field-background: #1a1b3a;
+      --field-foreground: #eceaff;
+      --field-placeholder: #6e6f96;
+      --field-border: #2d2e5a;
+
+      --success: #4fd39a;
+      --success-foreground: #10112a;
+      --warning: #f2b14f;
+      --warning-foreground: #10112a;
+      --danger: #ff7d97;
+      --danger-foreground: #10112a;
+
+      --border: #2a2b55;
+      --separator: #34356a;
+      --focus: #a99bff;
+      --link: #cfc6ff;
+
+      --cloud-top: #151638;
+      --cloud-mid: #10112a;
+      --cloud-bottom: #1a1640;
+      --glow-pink: #2a1a45;
+    }
+  }
+}
+
+@theme inline static {
+  --color-accent-soft-bg: var(--accent-soft-bg);
+  --color-accent-soft-fg: var(--accent-soft-fg);
+  --color-periwinkle: var(--periwinkle);
+  --color-cloud-top: var(--cloud-top);
+  --color-cloud-mid: var(--cloud-mid);
+  --color-cloud-bottom: var(--cloud-bottom);
+  --color-glow-pink: var(--glow-pink);
+}
+
+/* Give HeroUI's own text the app's UI face */
+.button__label,
+.input__input,
+.label__text,
+.description__root,
+.field-error__text,
+.input-otp__slot-value,
+.input-otp__slot-placeholder,
+.toast__label,
+.toast__description {
+  font-family: var(--font-sans);
+}
+
+.button__label {
+  font-weight: 700;
+}
+
+.label__text {
+  font-size: 14px;
+  font-weight: 600;
+}

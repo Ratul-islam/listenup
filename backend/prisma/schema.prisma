@@ -1,0 +1,330 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  // Null for accounts that only sign in through an OAuth provider
+  passwordHash      String?
+  name              String?
+  avatarUrl         String?
+  emailVerifiedAt   DateTime?
+  passwordChangedAt DateTime?
+  // Plan id from config/plans.ts ("free", "plus", "pro")
+  plan              String    @default("free")
+  // Set when the user closes their account; signing in within 30 days clears it, after that it is erased
+  closedAt          DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  oauthAccounts OAuthAccount[]
+  refreshTokens RefreshToken[]
+  otps          Otp[]
+  documents     Document[]
+  playback      PlaybackState[]
+  bookmarks     Bookmark[]
+  listeningDays ListeningDay[]
+  usageMonths   UsageMonth[]
+  preference    UserPreference?
+  folders       Folder[]
+
+  @@index([closedAt])
+  @@map("users")
+}
+
+model OAuthAccount {
+  id                String   @id @default(uuid())
+  // Provider key, e.g. "google", "github"
+  provider          String
+  providerAccountId String
+  userId            String
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+// One row per issued refresh token. Tokens rotated from the same login share
+// a familyId, so a reused (already rotated) token can revoke the whole chain.
+model RefreshToken {
+  id           String    @id @default(uuid())
+  tokenHash    String    @unique
+  familyId     String
+  userId       String
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?
+  userAgent    String?
+  ip           String?
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+enum OtpPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+model Otp {
+  id         String     @id @default(uuid())
+  userId     String
+  purpose    OtpPurpose
+  codeHash   String
+  attempts   Int        @default(0)
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  consumedAt DateTime?
+  createdAt  DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@map("otps")
+}
+
+enum DocumentKind {
+  PDF
+  DOCX
+  EPUB
+  TEXT
+  MARKDOWN
+  WEB
+  IMAGE
+}
+
+enum AutoExpressionStatus {
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum DocumentStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+// A user's folder on the Soundshelf; documents sit in one folder or loose on the shelf
+model Folder {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents Document[]
+
+  @@unique([userId, name])
+  @@map("folders")
+}
+
+model Document {
+  id                   String         @id @default(uuid())
+  userId               String
+  // Null = loose on the shelf; deleting the folder puts its documents back there
+  folderId             String?
+  title                String
+  author               String?
+  kind                 DocumentKind
+  status               DocumentStatus @default(PENDING)
+  error                String?
+  sourceUrl            String?
+  fileKey              String?
+  fileName             String?
+  mimeType             String?
+  // "en" | "bn" | "mixed"
+  language             String?
+  excerpt              String?
+  charCount            Int            @default(0)
+  chunkCount           Int            @default(0)
+  estimatedDurationSec Int            @default(0)
+  usedOcr              Boolean        @default(false)
+  // "Make it expressive" (AI emotion suggestions); null until first run
+  autoExpression       AutoExpressionStatus?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder    Folder?         @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  chunks    DocumentChunk[]
+  playback  PlaybackState[]
+  bookmarks Bookmark[]
+  export    AudioExport?
+
+  @@index([userId, createdAt])
+  @@index([userId, folderId])
+  @@map("documents")
+}
+
+// The unit of speech generation: a few sentences in one language.
+model DocumentChunk {
+  id                   String  @id @default(uuid())
+  documentId           String
+  index                Int
+  text                 String
+  // "en" | "bn"
+  language             String
+  // [{ start, end, paragraphStart }] character offsets of sentences within text
+  sentences            Json
+  // Emotions and sounds the listener (or AI) added: { emotions: [{ start, end, emotion, ai? }], sounds: [{ at, sound, ai? }] }
+  expressions          Json?
+  estimatedDurationSec Float
+
+  document Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  audio    AudioClip[]
+
+  @@unique([documentId, index])
+  @@map("document_chunks")
+}
+
+enum AudioStatus {
+  GENERATING
+  READY
+  FAILED
+}
+
+// Cached speech for one chunk in one voice
+model AudioClip {
+  id         String      @id @default(uuid())
+  chunkId    String
+  voiceId    String
+  status     AudioStatus @default(GENERATING)
+  storageKey String?
+  mimeType   String?
+  durationMs Int?
+  charCount  Int         @default(0)
+  provider   String
+  model      String
+  // Fingerprint of what was voiced (text, voice, emotions); a change means regenerate
+  renderKey  String?
+  error      String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  chunk DocumentChunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+
+  @@unique([chunkId, voiceId])
+  @@map("audio_clips")
+}
+
+enum ExportStatus {
+  RUNNING
+  READY
+  FAILED
+}
+
+// The whole document as one MP3 (a Plus feature), rebuilt only when the audio would differ
+model AudioExport {
+  id          String       @id @default(uuid())
+  documentId  String       @unique
+  status      ExportStatus @default(RUNNING)
+  // Fingerprint of every chunk's render key; a different key means the MP3 is stale
+  renderKey   String
+  voiceId     String?
+  // The latest job; older jobs still running are ignored when they finish
+  jobId       String?
+  chunksDone  Int          @default(0)
+  chunkCount  Int
+  storageKey  String?
+  sizeBytes   Int?
+  durationMs  Int?
+  error       String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("audio_exports")
+}
+
+model PlaybackState {
+  id          String    @id @default(uuid())
+  userId      String
+  documentId  String
+  chunkIndex  Int       @default(0)
+  offsetMs    Int       @default(0)
+  voiceId     String?
+  speed       Float     @default(1)
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, documentId])
+  @@map("playback_states")
+}
+
+model Bookmark {
+  id         String   @id @default(uuid())
+  userId     String
+  documentId String
+  chunkIndex Int
+  offsetMs   Int      @default(0)
+  label      String?
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([userId, documentId])
+  @@map("bookmarks")
+}
+
+// Seconds listened per user per local calendar day ("YYYY-MM-DD")
+model ListeningDay {
+  id      String @id @default(uuid())
+  userId  String
+  day     String
+  seconds Int    @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, day])
+  @@map("listening_days")
+}
+
+// Characters sent to speech providers per user per month ("YYYY-MM")
+model UsageMonth {
+  id         String @id @default(uuid())
+  userId     String
+  period     String
+  characters Int    @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, period])
+  @@map("usage_months")
+}
+
+model UserPreference {
+  userId           String   @id
+  voiceEnId        String?
+  voiceBnId        String?
+  speed            Float    @default(1)
+  dailyGoalMinutes Int      @default(30)
+  // Start the next unfinished shelf item when one finishes
+  autoPlayNext     Boolean  @default(true)
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
