@@ -32,6 +32,8 @@ export interface SpeechRequest {
   responseFormat?: 'mp3' | 'pcm'
   /** Reference audio for voice cloning, as data URLs */
   inputReferences?: string[]
+  /** Only this OpenRouter provider (e.g. "Together"), with no fallback to others */
+  onlyProvider?: string
 }
 
 /**
@@ -58,8 +60,20 @@ export async function createSpeech(req: SpeechRequest, timeoutMs = 60_000) {
       speed: req.speed ?? 1,
       response_format: req.responseFormat ?? 'mp3',
       input_references: req.inputReferences,
-      ...(req.style && { provider: { options: styleOptions(req.style) } }),
+      ...((req.style || req.onlyProvider) && {
+        provider: {
+          ...(req.style && { options: styleOptions(req.style) }),
+          ...(req.onlyProvider && { order: [req.onlyProvider], allow_fallbacks: false }),
+        },
+      }),
     }),
+  }).catch((e: unknown) => {
+    // A provider that hangs shouldn't hold playback for minutes; say so plainly instead
+    if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      console.error(`[openrouter] speech timed out after ${timeoutMs}ms (${req.model})`)
+      throw new AppError('The voice service is slow right now. Try again in a moment.', 503, 'PROVIDER_TIMEOUT')
+    }
+    throw e
   })
   if (!res.ok) throw await failure(res, 'speech')
   return { audio: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get('content-type') }
@@ -81,6 +95,8 @@ export interface ChatRequest {
   json?: boolean
   /** Names the service in error messages */
   purpose?: string
+  /** How much the model may think first (models that can't, ignore it); thinking is billed as output */
+  reasoning?: 'low' | 'medium' | 'high'
 }
 
 /** Single-turn chat completion; returns the assistant text */
@@ -99,6 +115,7 @@ export async function chatCompletion(req: ChatRequest, timeoutMs = 120_000) {
       ],
       ...(req.pdfEngine && { plugins: [{ id: 'file-parser', pdf: { engine: req.pdfEngine } }] }),
       ...(req.json && { response_format: { type: 'json_object' } }),
+      ...(req.reasoning && { reasoning: { effort: req.reasoning, exclude: true } }),
     }),
   })
   if (!res.ok) throw await failure(res, req.purpose ?? 'text recognition')

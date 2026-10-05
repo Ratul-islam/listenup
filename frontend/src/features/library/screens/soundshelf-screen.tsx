@@ -10,20 +10,27 @@ import { CloudBackground } from '@/components/ui/cloud-background';
 import { IconButton } from '@/components/ui/icon-button';
 import { PrimaryButton } from '@/components/ui/primary-button';
 import { Text } from '@/components/ui/text';
+import { ShelfBanner } from '@/features/ads/components/shelf-banner';
 import { useAuthStore } from '@/features/auth/store/auth.store';
 import { FolderStrip } from '@/features/folders/components/folder-strip';
 import { useFolders } from '@/features/folders/hooks/use-folders';
+import { useOfflineStore } from '@/features/offline/offline-files';
 import { usePlayerStore } from '@/features/player/store/player.store';
 import { initials } from '@/features/voices/voice-catalog';
+import { ApiError } from '@/lib/api/api-error';
 import { cardShadow, useTokens } from '@/lib/use-tokens';
 
 import { CategoryChips } from '../components/category-chips';
 import { ContinueCard } from '../components/continue-card';
+import { DigestCard } from '../components/digest-card';
 import { DocumentActions } from '../components/document-actions';
 import { DocumentRow } from '../components/document-row';
 import { SearchBar } from '../components/search-bar';
 import { useDocuments } from '../hooks/use-documents';
 import type { Category, DocumentSummary, SortOrder } from '../types';
+
+// The Free plan's banner sits after this many items (or after the last, on a shorter shelf)
+const BANNER_AFTER = 3;
 
 const SORTS: { id: SortOrder; label: string }[] = [
   { id: 'recent', label: 'Recently added' },
@@ -50,9 +57,12 @@ export default function SoundshelfScreen() {
 
   // Browsing shows folders plus loose items; searching or filtering looks everywhere
   const browsing = !deferredQuery && category === 'all';
-  const { data, isFetching, refetch, isLoading } = useDocuments({ category, sort, q: deferredQuery || undefined, folder: browsing ? 'root' : undefined });
+  const { data, isFetching, refetch, isLoading, error } = useDocuments({ category, sort, q: deferredQuery || undefined, folder: browsing ? 'root' : undefined });
   const folders = useFolders();
-  const items = data?.items ?? [];
+  const downloads = useOfflineStore((s) => s.downloads);
+  // No connection: show what's downloaded, which plays offline
+  const offline = !data && error instanceof ApiError && error.isNetworkError;
+  const items = data?.items ?? (offline ? Object.values(downloads).map((d) => d.reader.document) : []);
   const shelfEmpty = !!data && data.counts.all === 0 && folders.data?.length === 0;
   const bottomSpace = insets.bottom + (hasPlayer ? 190 : 120);
 
@@ -73,8 +83,9 @@ export default function SoundshelfScreen() {
 
       {shelfEmpty ? null : (
         <>
-          <View className="px-5">
+          <View className="gap-2 px-5">
             <ContinueCard />
+            {offline ? null : <DigestCard />}
           </View>
           <View className="gap-3">
             <View className="flex-row items-center gap-2 px-5">
@@ -86,6 +97,11 @@ export default function SoundshelfScreen() {
             <CategoryChips value={category} onChange={setCategory} />
           </View>
           {browsing ? <FolderStrip folders={folders.data ?? []} /> : null}
+          {offline ? (
+            <Text variant="caption" className="px-5">
+              {items.length ? 'You’re offline. These downloads play without a connection.' : 'You’re offline. Downloaded items show up here.'}
+            </Text>
+          ) : null}
         </>
       )}
     </View>
@@ -96,10 +112,13 @@ export default function SoundshelfScreen() {
       <FlatList
         data={items}
         keyExtractor={(d) => d.id}
-        renderItem={({ item }) => (
-          <View className="px-3">
-            <DocumentRow document={item} onMore={setActionsFor} />
-          </View>
+        renderItem={({ item, index }) => (
+          <>
+            <View className="px-3">
+              <DocumentRow document={item} onMore={setActionsFor} />
+            </View>
+            {!offline && index === Math.min(BANNER_AFTER, items.length) - 1 ? <ShelfBanner /> : null}
+          </>
         )}
         ListHeaderComponent={header}
         ListEmptyComponent={

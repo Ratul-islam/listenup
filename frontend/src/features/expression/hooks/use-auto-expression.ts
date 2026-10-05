@@ -7,12 +7,12 @@ import { usePlayerStore } from '@/features/player/store/player.store';
 import { getErrorMessage } from '@/lib/api/api-error';
 import { haptics } from '@/lib/haptics';
 
-import { expressionsApi } from '../api/expressions.api';
+import { expressionsApi, type NarrationChoice } from '../api/expressions.api';
 
 const POLL_MS = 3000;
 
 /** Reloads the open document's emotions into the player (if it's still open) */
-async function refresh(documentId: string) {
+export async function refresh(documentId: string) {
   const { voiceId } = usePlayerStore.getState();
   const reader = await documentsApi.reader(documentId, voiceId ?? undefined);
   if (usePlayerStore.getState().documentId === documentId) audioEngine.applyReader(reader);
@@ -57,15 +57,37 @@ export function useAutoExpression() {
     };
   }, [status, documentId, toast]);
 
-  const start = async () => {
-    if (!documentId) return;
+  const start = async (choice: NarrationChoice) => {
+    if (!documentId) return false;
     setBusy(true);
     try {
-      const document = await expressionsApi.startAuto(documentId);
+      const document = await expressionsApi.startAuto(documentId, choice);
       usePlayerStore.setState({ document });
-      toast.show({ label: 'Adding emotions…', description: 'AI is reading ahead. Keep listening.' });
+      // A chosen style plays from the next part right away
+      if (choice.style !== 'auto') await refresh(documentId);
+      toast.show({ label: 'Directing your story…', description: 'AI is reading ahead. Keep listening.' });
+      return true;
     } catch (e) {
       toast.show({ variant: 'danger', label: getErrorMessage(e) });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Changes or turns off the story style without a new AI run */
+  const setNarration = async (choice: NarrationChoice) => {
+    if (!documentId) return false;
+    setBusy(true);
+    try {
+      const document = await expressionsApi.setNarration(documentId, choice);
+      usePlayerStore.setState({ document });
+      await refresh(documentId);
+      toast.show({ label: choice.style ? 'Style changed' : 'Style turned off', description: 'You’ll hear it from the next part.' });
+      return true;
+    } catch (e) {
+      toast.show({ variant: 'danger', label: getErrorMessage(e) });
+      return false;
     } finally {
       setBusy(false);
     }
@@ -85,5 +107,5 @@ export function useAutoExpression() {
     }
   };
 
-  return { running: status === 'RUNNING', busy, hasAny, hasAi, start, clear };
+  return { running: status === 'RUNNING', busy, hasAny, hasAi, start, setNarration, clear };
 }

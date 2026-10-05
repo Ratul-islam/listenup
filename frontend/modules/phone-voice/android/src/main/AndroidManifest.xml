@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Android 11+ only lets apps see speech engines they declare interest in -->
+  <queries>
+    <intent>
+      <action android:name="android.intent.action.TTS_SERVICE" />
+    </intent>
+    <!-- Speech recognition, for voice search -->
+    <intent>
+      <action android:name="android.speech.RecognitionService" />
+    </intent>
+    <intent>
+      <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+    </intent>
+  </queries>
+</manifest>

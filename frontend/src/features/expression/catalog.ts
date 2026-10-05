@@ -66,6 +66,10 @@ export interface EmotionMark {
   start: number;
   end: number;
   emotion: EmotionId;
+  /** A stronger version ("heartbroken" rather than "sad") */
+  strong?: boolean;
+  /** How exactly to say it, in words ("like a scared little child") */
+  direction?: string;
   /** Suggested by "Make it expressive" */
   ai?: boolean;
 }
@@ -80,6 +84,33 @@ export interface ChunkExpressions {
   emotions: EmotionMark[];
   sounds: SoundMark[];
 }
+
+/** The emotions on the mood bar under the live text: the ones stories use most */
+export const QUICK_EMOTIONS: EmotionId[] = ['happy', 'sad', 'scared', 'angry', 'whisper'];
+
+/** How a whole document is narrated. Ids match the server's NARRATION_STYLES. */
+export type NarrationStyleId = 'suspense' | 'horror' | 'romance' | 'comedy' | 'bedtime' | 'drama' | 'adventure' | 'documentary' | 'lecture' | 'calm';
+export type NarrationStrength = 'subtle' | 'balanced' | 'dramatic';
+
+export const NARRATION_STYLES: { id: NarrationStyleId; label: string; emoji: string }[] = [
+  { id: 'suspense', label: 'Suspense', emoji: '🕯️' },
+  { id: 'horror', label: 'Horror', emoji: '👻' },
+  { id: 'romance', label: 'Romance', emoji: '💞' },
+  { id: 'comedy', label: 'Comedy', emoji: '😄' },
+  { id: 'bedtime', label: 'Bedtime', emoji: '🌙' },
+  { id: 'drama', label: 'Drama', emoji: '🎭' },
+  { id: 'adventure', label: 'Adventure', emoji: '🗺️' },
+  { id: 'documentary', label: 'Documentary', emoji: '📰' },
+  { id: 'lecture', label: 'Lecture', emoji: '🎓' },
+  { id: 'calm', label: 'Calm', emoji: '🧘' },
+];
+export const narrationStyleMeta = Object.fromEntries(NARRATION_STYLES.map((s) => [s.id, s])) as Record<NarrationStyleId, (typeof NARRATION_STYLES)[number]>;
+
+export const NARRATION_STRENGTHS: { id: NarrationStrength; label: string }[] = [
+  { id: 'subtle', label: 'Subtle' },
+  { id: 'balanced', label: 'Balanced' },
+  { id: 'dramatic', label: 'Dramatic' },
+];
 
 /** Background tint for text with an emotion (~18% opacity) */
 export const tint = (emotion: EmotionId) => `${emotionMeta[emotion].color}2e`;

@@ -1,5 +1,6 @@
+import { router } from 'expo-router';
 import { useToast } from 'heroui-native';
-import { Check, Download, Folder, FolderInput, FolderPlus, Library, Pencil, ScanText, Trash2 } from 'lucide-react-native';
+import { BookOpenCheck, Check, CloudDownload, Download, Folder, FolderInput, FolderPlus, Languages, Library, ListX, Pencil, Podcast, RefreshCw, ScanText, Trash2, X } from 'lucide-react-native';
 import { useState } from 'react';
 import { ScrollView, TextInput, View } from 'react-native';
 
@@ -8,13 +9,17 @@ import { PrimaryButton } from '@/components/ui/primary-button';
 import { Text } from '@/components/ui/text';
 import { ExportPanel } from '@/features/exports/components/export-panel';
 import { NameForm } from '@/features/folders/components/folder-name-sheet';
+import { offlineFiles, useOfflineStore } from '@/features/offline/offline-files';
+import { OfflinePanel } from '@/features/offline/offline-panel';
 import { useCreateFolder, useFolders, useMoveDocument } from '@/features/folders/hooks/use-folders';
 import { audioEngine } from '@/features/player/engine/audio-engine';
 import { usePlayerStore } from '@/features/player/store/player.store';
-import { getErrorMessage } from '@/lib/api/api-error';
+import { useAddToPodcast, useRemoveFromPodcast } from '@/features/podcast/hooks';
+import { getErrorMessage, hasErrorCode } from '@/lib/api/api-error';
+import { LANGS, LANGUAGE_NAMES, type Lang } from '@/lib/languages';
 import { useTokens } from '@/lib/use-tokens';
 
-import { useDeleteDocument, useRenameDocument, useReprocessDocument } from '../hooks/use-documents';
+import { useDeleteDocument, useRenameDocument, useReprocessDocument, useTranslateDocument } from '../hooks/use-documents';
 import type { DocumentSummary } from '../types';
 
 interface DocumentActionsProps {
@@ -25,20 +30,66 @@ interface DocumentActionsProps {
 export function DocumentActions({ document, onClose }: DocumentActionsProps) {
   const t = useTokens();
   const { toast } = useToast();
-  const [mode, setMode] = useState<'menu' | 'rename' | 'move' | 'new-folder' | 'export' | 'delete'>('menu');
+  const [mode, setMode] = useState<'menu' | 'rename' | 'move' | 'new-folder' | 'export' | 'offline' | 'translate' | 'podcast' | 'delete'>('menu');
+  const downloaded = useOfflineStore((s) => (document ? !!s.downloads[document.id] : false));
   const [title, setTitle] = useState('');
   const rename = useRenameDocument();
   const reprocess = useReprocessDocument();
   const remove = useDeleteDocument();
+  const translate = useTranslateDocument();
   const folders = useFolders();
   const move = useMoveDocument();
   const createFolder = useCreateFolder();
+  const addToPodcast = useAddToPodcast();
+  const removeFromPodcast = useRemoveFromPodcast();
 
   const close = () => {
     setMode('menu');
     onClose();
   };
-  const fail = (e: unknown) => toast.show({ variant: 'danger', label: getErrorMessage(e) });
+  const fail = (e: unknown) =>
+    toast.show({
+      variant: 'danger',
+      label: getErrorMessage(e),
+      ...(hasErrorCode(e, 'TRANSLATION_LIMIT_REACHED', 'PREMIUM_REQUIRED') && {
+        actionLabel: 'See plans',
+        onActionPress: ({ hide }) => {
+          hide('all');
+          router.push('/plans');
+        },
+      }),
+    });
+
+  const translateTo = (language: Lang) => {
+    if (!document) return;
+    translate.mutate(
+      { id: document.id, language },
+      {
+        onSuccess: () => toast.show({ label: `Translating into ${LANGUAGE_NAMES[language]}`, description: 'It will appear on your shelf when it’s ready.' }),
+        onError: fail,
+        onSettled: close,
+      },
+    );
+  };
+
+  // Adding again rebuilds the episode in the current voice
+  const podcastAdd = () => {
+    if (!document) return;
+    addToPodcast.mutate(document.id, {
+      onSuccess: () =>
+        toast.show({
+          label: document.inPodcast ? 'Updating the episode' : 'Adding to your podcast',
+          description: 'It shows up in your podcast app once it’s ready.',
+          actionLabel: 'Open',
+          onActionPress: ({ hide }) => {
+            hide('all');
+            router.push('/podcast');
+          },
+        }),
+      onError: fail,
+      onSettled: close,
+    });
+  };
 
   const moveTo = async (folderId: string | null, folderName: string) => {
     if (!document) return;
@@ -50,7 +101,7 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
   };
 
   if (!document) return null;
-  const canOcr = document.kind === 'PDF' || document.kind === 'IMAGE';
+  const canOcr = (document.kind === 'PDF' || document.kind === 'IMAGE') && !document.translatedFromId;
   const busy = document.status === 'PENDING' || document.status === 'PROCESSING';
 
   return (
@@ -66,7 +117,13 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
               ? 'New folder'
               : mode === 'export'
                 ? 'Download MP3'
-                : document.title
+                : mode === 'translate'
+                  ? 'Translate into'
+                  : mode === 'offline'
+                    ? 'Listen offline'
+                    : mode === 'podcast'
+                      ? 'In your podcast'
+                      : document.title
       }
     >
       {mode === 'menu' ? (
@@ -84,7 +141,56 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
           />
           <SheetAction icon={<FolderInput size={18} color={t.foreground} />} label="Move to folder" onPress={() => setMode('move')} />
           {document.status === 'READY' ? (
+            <SheetAction
+              icon={<CloudDownload size={18} color={t.foreground} />}
+              label={downloaded ? 'Downloaded for offline' : 'Download for offline'}
+              onPress={() => setMode('offline')}
+            />
+          ) : null}
+          {document.status === 'READY' ? (
             <SheetAction icon={<Download size={18} color={t.foreground} />} label="Download MP3" onPress={() => setMode('export')} />
+          ) : null}
+          {document.status === 'READY' ? (
+            <SheetAction
+              icon={<Podcast size={18} color={t.foreground} />}
+              label={document.inPodcast ? 'In your podcast' : 'Add to podcast'}
+              detail={document.inPodcast ? 'Update or remove the episode' : 'Plus · Listen in any podcast app'}
+              disabled={addToPodcast.isPending}
+              onPress={() => (document.inPodcast ? setMode('podcast') : podcastAdd())}
+            />
+          ) : null}
+          {document.status === 'READY' ? (
+            <SheetAction
+              icon={<BookOpenCheck size={18} color={t.foreground} />}
+              label="Summary and quiz"
+              detail="Key points and 10 questions to test yourself"
+              onPress={() => {
+                close();
+                router.push({ pathname: '/study/[id]', params: { id: document.id } });
+              }}
+            />
+          ) : null}
+          {document.status === 'READY' ? (
+            <SheetAction
+              icon={<Languages size={18} color={t.foreground} />}
+              label="Translate"
+              detail="Listen to it in another language"
+              onPress={() => setMode('translate')}
+            />
+          ) : null}
+          {document.status === 'READY' || document.status === 'FAILED' ? (
+            <SheetAction
+              icon={<ListX size={18} color={t.foreground} />}
+              label={document.keepClutter ? 'Skip citations and links' : 'Read citations and links too'}
+              detail={document.keepClutter ? 'Also page numbers and reference lists' : 'Reads the document again with everything in it'}
+              disabled={busy}
+              onPress={() =>
+                reprocess.mutate(
+                  { id: document.id, ocr: false, keepClutter: !document.keepClutter },
+                  { onSuccess: () => toast.show({ label: 'Reading the document again' }), onError: fail, onSettled: close },
+                )
+              }
+            />
           ) : null}
           {canOcr ? (
             <SheetAction
@@ -124,6 +230,50 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
       ) : null}
 
       {mode === 'export' ? <ExportPanel document={document} /> : null}
+
+      {mode === 'offline' ? <OfflinePanel document={document} /> : null}
+
+      {mode === 'translate' ? (
+        <ScrollView style={{ maxHeight: 380 }}>
+          {LANGS.filter((lang) => lang !== document.language).map((lang) => (
+            <SheetAction
+              key={lang}
+              icon={<Languages size={18} color={t.foreground} />}
+              label={LANGUAGE_NAMES[lang]}
+              disabled={translate.isPending}
+              onPress={() => translateTo(lang)}
+            />
+          ))}
+        </ScrollView>
+      ) : null}
+
+      {mode === 'podcast' ? (
+        <>
+          <SheetAction
+            icon={<RefreshCw size={18} color={t.foreground} />}
+            label="Update the episode"
+            detail="Uses your current voice and emotions"
+            disabled={addToPodcast.isPending}
+            onPress={podcastAdd}
+          />
+          <SheetAction
+            icon={<X size={18} color={t.foreground} />}
+            label="Remove from podcast"
+            disabled={removeFromPodcast.isPending}
+            onPress={() =>
+              removeFromPodcast.mutate(document.id, { onSuccess: () => toast.show({ label: 'Removed from your podcast' }), onError: fail, onSettled: close })
+            }
+          />
+          <SheetAction
+            icon={<Podcast size={18} color={t.foreground} />}
+            label="Open your podcast"
+            onPress={() => {
+              close();
+              router.push('/podcast');
+            }}
+          />
+        </>
+      ) : null}
 
       {mode === 'new-folder' ? (
         <NameForm
@@ -167,6 +317,7 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
                 onError: fail,
                 onSuccess: () => {
                   if (usePlayerStore.getState().documentId === document.id) void audioEngine.close();
+                  offlineFiles.remove(document.id);
                   toast.show({ label: 'Deleted' });
                   close();
                 },

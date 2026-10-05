@@ -11,7 +11,8 @@ export const queue = new PgBoss({
   schema: 'pgboss',
   supervise: env.RUN_WORKERS,
   schedule: env.RUN_WORKERS,
-  max: env.RUN_WORKERS ? 10 : 2,
+  // An API-only process just sends jobs
+  max: env.RUN_WORKERS ? env.QUEUE_POOL_MAX : 1,
 })
 
 export const QUEUES = {
@@ -19,11 +20,17 @@ export const QUEUES = {
   autoExpression: 'document.auto-expression',
   purgeClosedAccounts: 'users.purge-closed',
   exportAudio: 'document.export-audio',
+  purgeOrphanAudio: 'audio.purge-orphans',
+  expirePlans: 'billing.expire-plans',
+  translateDocument: 'document.translate',
+  prepareOffline: 'document.prepare-offline',
 } as const
 
-// Voicing a whole book can take a while
+// Voicing or translating a whole book can take a while
 const EXPIRE_SECONDS: Partial<Record<(typeof QUEUES)[keyof typeof QUEUES], number>> = {
   [QUEUES.exportAudio]: 3 * 60 * 60,
+  [QUEUES.translateDocument]: 60 * 60,
+  [QUEUES.prepareOffline]: 3 * 60 * 60,
 }
 
 export interface ProcessDocumentJob {
@@ -40,11 +47,36 @@ export interface ExportAudioJob {
   voiceId?: string
 }
 
+export interface PrepareOfflineJob {
+  documentId: string
+  /** Matches OfflineDownload.jobId while this is the latest download of the document */
+  jobId: string
+  voiceId?: string
+}
+
+export interface TranslateDocumentJob {
+  /** The new, translated document (filled in by the job) */
+  documentId: string
+  sourceId: string
+  language: string
+}
+
 export interface AutoExpressionJob {
   documentId: string
 }
 
 let started: Promise<void> | undefined
+
+const LIVE_STATES = new Set(['created', 'retry', 'active'])
+
+/**
+ * Whether a job sent with this singleton key is waiting, running or due a retry.
+ * A job whose process died stays "active" until it expires, then retries or fails.
+ */
+export async function hasLiveJob(name: (typeof QUEUES)[keyof typeof QUEUES], key: string) {
+  await startQueue()
+  return (await queue.findJobs(name, { key })).some((j) => LIVE_STATES.has(j.state))
+}
 
 export function startQueue() {
   started ??= (async () => {

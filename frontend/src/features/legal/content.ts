@@ -45,6 +45,8 @@ export const LEGAL: Record<'terms' | 'privacy', LegalDoc> = {
         title: 'Plans and limits',
         paragraphs: [
           'Each plan includes a monthly amount of listening. The Free plan resets on the 1st of each month. Paid plans, when available, are billed through Google Play and can be cancelled there. We may change plans or limits, and will tell you in the app before a change affects you.',
+          'The Free plan shows ads. Watching an optional rewarded ad adds Natural-voice minutes, a few times a day. Minutes from invites are given once a friend who joined with your code has confirmed their email and listened for a few minutes; accounts made only to collect them may lose those minutes.',
+          'The private podcast feed (Plus and Pro) is reached through a secret link. Anyone who has the link can listen to the episodes in it, so keep it to yourself; you can replace it with a new one at any time.',
         ],
       },
       {
@@ -83,18 +85,21 @@ export const LEGAL: Record<'terms' | 'privacy', LegalDoc> = {
           'What you import: files, links, pasted text and photos of pages, the text we extract from them, and the audio we create.',
           'How you listen: progress, bookmarks, emotions you add to lines, listening minutes and streaks, and your settings.',
           'Sign-in records: the device and network address of each signed-in session, so you can sign out everywhere.',
+          'Invites: your invite code, who invited you, and how many friends joined with your code.',
         ],
       },
       {
         title: 'How we use it',
         paragraphs: [
-          'Only to run ListenUp: to read your content aloud, remember where you are, show your progress and keep your account secure. We do not sell your data or use it for advertising.',
+          'To run ListenUp: to read your content aloud, remember where you are, show your progress and keep your account secure. We do not sell your data, and what you import is never used for ads.',
+          'On the Free plan, Google AdMob shows ads and may use your device’s advertising ID and approximate location to choose them and measure them. Where the law requires it (for example in the EU and UK), the app asks for your consent first, and you can change your choice in Studio under “Ad privacy choices”. Paid plans show no ads.'
         ],
       },
       {
         title: 'Who processes it',
         paragraphs: [
           'OpenRouter, and the AI model providers it routes requests to, receive the text and images needed to read pages and create speech. An email provider sends your sign-in and reset codes. Our hosting and storage providers keep the data on our behalf.',
+          'Google Play and RevenueCat handle purchases and subscriptions; we receive your plan, renewal date and store country, never your payment details. Google AdMob shows ads on the Free plan.',
         ],
       },
       {

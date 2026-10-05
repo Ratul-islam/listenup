@@ -44,3 +44,6 @@ example
 
 .env
 android-build.log
+
+# local Expo modules: Gradle output
+modules/*/android/build/

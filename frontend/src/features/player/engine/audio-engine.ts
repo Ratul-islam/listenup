@@ -10,11 +10,14 @@ import { AppState } from 'react-native';
 
 import type { ChunkExpressions } from '@/features/expression/catalog';
 import { documentsApi } from '@/features/library/api/documents.api';
-import type { Lang, ReaderData } from '@/features/library/types';
+import type { Lang, ReaderChunk, ReaderData } from '@/features/library/types';
+import { offlineFiles } from '@/features/offline/offline-files';
 import { voicesApi } from '@/features/voices/api/voices.api';
 import { voicesKey } from '@/features/voices/hooks/use-voices';
-import { getErrorMessage } from '@/lib/api/api-error';
+import { ApiError, getErrorMessage, hasErrorCode } from '@/lib/api/api-error';
 import { queryClient } from '@/lib/query-client';
+import { noteFinishedDocument } from '@/lib/review-prompt';
+import { phoneVoice } from '@/modules/phone-voice';
 
 import { playbackApi, type ChunkAudio } from '../api/playback.api';
 import { chunkDuration, globalPosition, initialPlayerState, locate, usePlayerStore } from '../store/player.store';
@@ -25,10 +28,15 @@ const SKIP_MS = 15_000;
 const get = usePlayerStore.getState;
 const set = usePlayerStore.setState;
 
+const codeOf = (error: unknown) => (error as { code?: string } | null)?.code ?? null;
+
 /**
  * Streams a document chunk by chunk through a single expo-audio player.
  * The next chunk is requested (so the server generates it) and preloaded
- * while the current one plays, so handoffs are near-seamless.
+ * while the current one plays, so handoffs are near-seamless. Phone voices
+ * are voiced on the device into files and play through the same player.
+ * When the server refuses new audio (minutes used up, daily cap), playback
+ * switches that language to the phone voice instead of stopping.
  */
 class AudioEngine {
   private player: AudioPlayer | null = null;
@@ -73,17 +81,62 @@ class AudioEngine {
     return voices[(chunks[index]?.language ?? 'en') as Lang];
   }
 
-  /** Audio URL for a chunk; requesting it makes the server generate it */
+  /** Audio URL for a chunk; requesting it makes the server (or, for phone voices, the device) voice it */
   private audioFor(index: number) {
-    const { documentId, voiceId } = get();
+    const { documentId, voiceId, chunks, tiers } = get();
+    const chunk = chunks[index];
     const key = `${documentId}:${index}:${this.voiceFor(index)}`;
     let pending = this.urls.get(key);
     if (!pending) {
-      pending = playbackApi.audio(documentId!, index, voiceId ?? undefined);
+      const saved = chunk && tiers[chunk.language] !== 'phone' ? offlineFiles.clipFor(documentId!, index, this.voiceFor(index), chunk.expressions) : null;
+      pending = saved
+        ? Promise.resolve({ index, voiceId: this.voiceFor(index), language: chunk!.language, durationMs: saved.durationMs, mimeType: 'audio/mpeg', url: saved.uri })
+        : chunk && tiers[chunk.language] === 'phone'
+          ? this.phoneAudio(chunk)
+          : playbackApi.audio(documentId!, index, voiceId ?? undefined);
       pending.catch(() => this.urls.delete(key));
       this.urls.set(key, pending);
     }
     return pending;
+  }
+
+  private async phoneAudio(chunk: ReaderChunk): Promise<ChunkAudio> {
+    const clip = await phoneVoice.synthesize(chunk.text, chunk.language);
+    return {
+      index: chunk.index,
+      voiceId: `phone-${chunk.language}`,
+      language: chunk.language,
+      durationMs: clip.durationMs,
+      mimeType: 'audio/wav',
+      url: clip.uri,
+    };
+  }
+
+  /**
+   * The server won't voice more right now: use the phone voice for that
+   * language for the rest of this session. False if that's not possible.
+   */
+  private fallBackToPhone(index: number, error: unknown) {
+    // Out of minutes, the daily cap, or the voice service down or stuck
+    if (!phoneVoice.isAvailable || !hasErrorCode(error, 'USAGE_LIMIT_REACHED', 'BUDGET_PAUSED', 'PROVIDER_TIMEOUT', 'PROVIDER_ERROR')) return false;
+    const lang = get().chunks[index]?.language ?? 'en';
+    const tier = get().tiers[lang];
+    if (tier === 'phone') return false;
+
+    const outOfMinutes = hasErrorCode(error, 'USAGE_LIMIT_REACHED');
+    set((s) => ({
+      voices: { ...s.voices, [lang]: `phone-${lang}` },
+      tiers: { ...s.tiers, [lang]: 'phone' },
+      expressive: { ...s.expressive, [lang]: false },
+      notice: {
+        message: outOfMinutes
+          ? `You're out of ${tier === 'expressive' ? 'Expressive' : 'Natural'} minutes, so ListenUp switched to your phone's voice.`
+          : "ListenUp's voices are busy right now, so it switched to your phone's voice.",
+        showPlans: outOfMinutes,
+        offerAd: outOfMinutes && tier === 'natural',
+      },
+    }));
+    return true;
   }
 
   private warmNext(index: number) {
@@ -96,7 +149,7 @@ class AudioEngine {
   private async loadChunk(index: number, offsetMs: number, autoplay: boolean) {
     const token = ++this.loadToken;
     const player = await this.ensurePlayer();
-    set({ chunkIndex: index, positionMs: offsetMs, isBuffering: true, finished: false, error: null });
+    set({ chunkIndex: index, positionMs: offsetMs, isBuffering: true, finished: false, error: null, errorCode: null });
 
     try {
       const audio = await this.audioFor(index);
@@ -118,8 +171,9 @@ class AudioEngine {
       this.warmNext(index + 1);
     } catch (error) {
       if (token !== this.loadToken) return;
+      if (this.fallBackToPhone(index, error)) return void this.loadChunk(index, offsetMs, autoplay);
       player.pause();
-      set({ isBuffering: false, isPlaying: false, error: getErrorMessage(error) });
+      set({ isBuffering: false, isPlaying: false, error: getErrorMessage(error), errorCode: codeOf(error) });
     }
   }
 
@@ -136,6 +190,7 @@ class AudioEngine {
     } else {
       set({ isPlaying: false, finished: true, positionMs: chunkDuration(chunks[chunkIndex]) });
       await this.report(true);
+      void noteFinishedDocument();
       await this.playNextItem();
     }
   }
@@ -212,7 +267,7 @@ class AudioEngine {
     this.urls.clear();
     set({ ...initialPlayerState, status: 'loading', documentId, speed: state.speed });
     try {
-      const reader = await documentsApi.reader(documentId, voiceId);
+      const reader = await this.loadReader(documentId, voiceId);
       const progress = reader.document.progress;
       const restart = !!progress?.completedAt;
       set({
@@ -221,6 +276,7 @@ class AudioEngine {
         chunks: reader.chunks,
         voices: reader.voices,
         expressive: reader.expressive,
+        tiers: reader.tiers,
         voiceId: voiceId ?? progress?.voiceId ?? null,
         speed: reader.speed,
       });
@@ -228,6 +284,17 @@ class AudioEngine {
       await this.loadChunk(restart ? 0 : (progress?.chunkIndex ?? 0), restart ? 0 : (progress?.offsetMs ?? 0), autoplay);
     } catch (error) {
       set({ status: 'error', error: getErrorMessage(error) });
+    }
+  }
+
+  /** The document's text and voices, from the server, or from its download when offline */
+  private async loadReader(documentId: string, voiceId?: string): Promise<ReaderData> {
+    try {
+      return await documentsApi.reader(documentId, voiceId);
+    } catch (error) {
+      const saved = offlineFiles.get(documentId);
+      if (saved && error instanceof ApiError && error.isNetworkError) return saved.reader;
+      throw error;
     }
   }
 
@@ -283,12 +350,33 @@ class AudioEngine {
     this.urls.clear();
     try {
       const reader = await documentsApi.reader(documentId, voiceId);
-      set({ voiceId, voices: reader.voices, expressive: reader.expressive, chunks: reader.chunks });
+      set({ voiceId, voices: reader.voices, expressive: reader.expressive, tiers: reader.tiers, chunks: reader.chunks });
       await this.loadChunk(chunkIndex, 0, isPlaying);
       void this.report();
     } catch (error) {
+      if (this.switchVoiceOffline(voiceId, error)) return void this.loadChunk(chunkIndex, 0, isPlaying);
       set({ error: getErrorMessage(error) });
     }
+  }
+
+  /**
+   * No connection: switch voices without the server when this device can still
+   * play the new one, i.e. it's the phone voice or the voice the download used.
+   */
+  private switchVoiceOffline(voiceId: string, error: unknown) {
+    if (!(error instanceof ApiError && error.isNetworkError)) return false;
+    const { documentId } = get();
+    const voices = queryClient.getQueryData<{ voices: { id: string; language: Lang; tier: ReaderData['tiers'][Lang]; expressive: boolean }[] }>(voicesKey)?.voices;
+    const voice = voices?.find((v) => v.id === voiceId);
+    const downloaded = documentId ? offlineFiles.get(documentId) : null;
+    if (!voice || (voice.tier !== 'phone' && downloaded?.voices[voice.language] !== voiceId)) return false;
+    set((s) => ({
+      voiceId,
+      voices: { ...s.voices, [voice.language]: voice.id },
+      tiers: { ...s.tiers, [voice.language]: voice.tier },
+      expressive: { ...s.expressive, [voice.language]: voice.expressive },
+    }));
+    return true;
   }
 
   /** Drops cached audio links so these chunks are fetched (and re-voiced) again */
@@ -319,7 +407,8 @@ class AudioEngine {
       await this.loadChunk(index, at(audio.durationMs), true);
     } catch (error) {
       if (token !== this.loadToken) return;
-      set({ isBuffering: false, isPlaying: false, error: getErrorMessage(error) });
+      if (this.fallBackToPhone(index, error)) return void this.loadChunk(index, 0, true);
+      set({ isBuffering: false, isPlaying: false, error: getErrorMessage(error), errorCode: codeOf(error) });
     }
   }
 

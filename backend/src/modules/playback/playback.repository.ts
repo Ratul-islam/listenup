@@ -10,6 +10,10 @@ export class PlaybackRepository {
     })
   }
 
+  findUserPlan(userId: string) {
+    return this.db.user.findUnique({ where: { id: userId }, select: { plan: true } })
+  }
+
   findChunk(documentId: string, index: number) {
     return this.db.documentChunk.findUnique({ where: { documentId_index: { documentId, index } } })
   }

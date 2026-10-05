@@ -13,6 +13,7 @@ cp .env.example .env   # then fill it in
 |---|---|
 | `EXPO_PUBLIC_API_URL` | API base including `/api/v1`. Phone over USB: `http://localhost:8000/api/v1` + `adb reverse tcp:8000 tcp:8000`. Emulator: `http://10.0.2.2:8000/api/v1`. |
 | `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` | The **Web** OAuth client ID (same as the backend's `GOOGLE_CLIENT_ID`). Empty hides Google sign-in. |
+| `EXPO_PUBLIC_REVENUECAT_GOOGLE_KEY` | RevenueCat's public Google Play API key. Empty keeps plans as "Available soon". |
 
 Google sign-in also needs an **Android** OAuth client in the same Google Cloud project, registered with package `dev.ratul.tts` and your debug keystore's SHA-1 (`cd android && ./gradlew signingReport`). The app never uses that ID directly, but Google rejects sign-in without it.
 

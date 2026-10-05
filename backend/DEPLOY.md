@@ -9,6 +9,16 @@ One Docker image, two roles:
 
 The API answers the app. The worker runs the background jobs: reading imported files, AI emotions, MP3 exports, and the daily erasure of closed accounts. Both use the same Postgres (Supabase), so the API just queues jobs and the worker picks them up. Run exactly one worker.
 
+## Simplest: one Render Web Service
+
+Runs the API and the jobs in one always-on container (no Vercel needed).
+
+1. Render, then **New +**, then **Web Service**. Connect the GitHub repo, branch `main`.
+2. Settings: Language **Docker**, Root Directory `backend`, Dockerfile Path `./Dockerfile`, Docker Command **empty**, Health Check Path `/api/v1/health`, Region Singapore, Instance Type **Starter** or higher (the free plan sleeps, which stops the jobs).
+3. Environment: the variables below, with `NODE_ENV=production`, `RUN_WORKERS=true`, and `PUBLIC_URL=https://<service>.onrender.com`. Render sets `PORT` itself.
+4. Deploy, then open `https://<service>.onrender.com/api/v1/health`. It should show `{"status":"ok"}`.
+5. In `frontend/.env`: `EXPO_PUBLIC_API_URL=https://<service>.onrender.com/api/v1`.
+
 ## Before each deploy
 
 If `prisma/migrations` changed, apply them to the production database from your machine:
@@ -48,12 +58,21 @@ Same as `.env.example`. For production:
 
 - `NODE_ENV=production`
 - `DATABASE_URL`: the Supabase session pooler URL; `DATABASE_POOL_MAX=3` on Vercel
+- `DATABASE_POOL_MAX` (default 5) and `QUEUE_POOL_MAX` (default 3): connections per process. Supabase's session pooler allows 15 clients in all, shared by Render, local development and migrations, so one Render service (8) and one local server (8) can together hit the limit when both are busy. Raise the pool size in Supabase (Database → Settings → Connection pooling), or point local development at its own database, if you see `EMAXCONNSESSION`.
 - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `JWT_PASS_RESET_SECRET`
 - `OPENROUTER_API_KEY` (required in production)
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` (required in production)
 - `STORAGE_DRIVER=s3`, `S3_BUCKET`, `S3_REGION=auto`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
 - `GOOGLE_CLIENT_ID` for Google sign-in
 - `RUN_WORKERS`: `false` for the API, `true` for the worker
+- `FREE_DAILY_SPEND_CAP_USD` (default 2) and `DAILY_SPEND_CAP_USD` (default 25): daily speech spending caps, for free users together and for everyone
+- `REVENUECAT_SECRET_KEY` and `REVENUECAT_WEBHOOK_SECRET` for Google Play purchases. Point RevenueCat's webhook at `https://<service>/api/v1/billing/webhook` with that Authorization value
+- `ADMOB_SSV` (default false): set to `true` once AdMob's rewarded-ad server-side verification calls `https://<service>/api/v1/ads/rewards/verify`. Until then the app reports rewards itself (at most 3 a day)
+- `ANDROID_PACKAGE` (default `dev.ratul.tts`): used in invite links to Google Play
+- The private podcast feed builds its links from `PUBLIC_URL`, so set it to the address podcast apps can reach
+- `OPENROUTER_TEXT_MODEL` (default `google/gemini-3.5-flash-lite`) and `OPENROUTER_DIRECTOR_PRO_MODEL` (default `google/gemini-3.8-flash`): text AI. The second is "Make it expressive" on Pro.
+- `KOKORO_URL` (optional): your own Kokoro-FastAPI server for Natural voices, for example `http://kokoro:8880`. If it's empty or down, OpenRouter is used. `KOKORO_MAX_IN_FLIGHT` (default 2) is how many requests it gets at once; the rest go to OpenRouter.
+- Keep the OpenRouter **API key's** spending limit well above $0.50. Gemini voice requests are refused below that, and every HD voice then falls back to the phone voice.
 
 ## Try the image locally
 

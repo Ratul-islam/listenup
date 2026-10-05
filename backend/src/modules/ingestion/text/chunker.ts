@@ -1,5 +1,5 @@
 import { CHARS_PER_SECOND, CHUNK_MAX_CHARS, CHUNK_TARGET_CHARS, FIRST_CHUNK_CHARS } from '../../../config/constants.js'
-import { detectLanguage, type Lang } from './language.js'
+import { detectLanguage, type Lang, type ScriptLanguages } from './language.js'
 
 export interface SentenceSpan {
   start: number
@@ -22,21 +22,33 @@ interface Sentence {
 
 const segmenter = new Intl.Segmenter('en', { granularity: 'sentence' })
 
+/**
+ * Chunk sizes are set in English characters; languages that say more per
+ * character (Japanese, Mandarin) get proportionally fewer, so every chunk
+ * takes about the same time to voice and to hear.
+ */
+const sized = (chars: number, language: Lang) => Math.round((chars * CHARS_PER_SECOND[language]) / CHARS_PER_SECOND.en)
+
 /** Breaks a very long sentence at clause punctuation so it fits a chunk */
-function splitLong(sentence: string): string[] {
-  if (sentence.length <= CHUNK_MAX_CHARS) return [sentence]
+function splitLong(sentence: string, max: number): string[] {
+  if (sentence.length <= max) return [sentence]
   const parts: string[] = []
   let rest = sentence
-  while (rest.length > CHUNK_MAX_CHARS) {
-    const window = rest.slice(0, CHUNK_MAX_CHARS)
+  while (rest.length > max) {
+    const window = rest.slice(0, max)
     const cut = Math.max(
       window.lastIndexOf(', '),
       window.lastIndexOf('; '),
       window.lastIndexOf(': '),
       window.lastIndexOf(' — '),
       window.lastIndexOf(', '),
+      // Japanese, Chinese and Urdu clause marks, which have no space after them
+      window.lastIndexOf('，'),
+      window.lastIndexOf('、'),
+      window.lastIndexOf('；'),
+      window.lastIndexOf('،'),
     )
-    const at = cut > CHUNK_MAX_CHARS * 0.4 ? cut + 1 : window.lastIndexOf(' ') > 0 ? window.lastIndexOf(' ') : CHUNK_MAX_CHARS
+    const at = cut > max * 0.4 ? cut + 1 : window.lastIndexOf(' ') > 0 ? window.lastIndexOf(' ') : max
     parts.push(rest.slice(0, at).trim())
     rest = rest.slice(at).trim()
   }
@@ -44,14 +56,15 @@ function splitLong(sentence: string): string[] {
   return parts
 }
 
-function toSentences(paragraphs: string[]): Sentence[] {
+function toSentences(paragraphs: string[], scripts: ScriptLanguages): Sentence[] {
   const out: Sentence[] = []
   for (const paragraph of paragraphs) {
     let first = true
     for (const { segment } of segmenter.segment(paragraph)) {
-      for (const piece of splitLong(segment.trim())) {
+      const max = sized(CHUNK_MAX_CHARS, detectLanguage(segment, scripts))
+      for (const piece of splitLong(segment.trim(), max)) {
         if (!piece) continue
-        out.push({ text: piece, language: detectLanguage(piece), paragraphStart: first })
+        out.push({ text: piece, language: detectLanguage(piece, scripts), paragraphStart: first })
         first = false
       }
     }
@@ -62,8 +75,10 @@ function toSentences(paragraphs: string[]): Sentence[] {
 /**
  * Groups sentences into speech chunks of a single language. The first chunk
  * is short so audio starts fast; later chunks prefer to end at paragraphs.
+ * Latin-script sentences and Chinese characters take the document's languages
+ * for them (`scripts`).
  */
-export function chunkParagraphs(paragraphs: string[]): ChunkDraft[] {
+export function chunkParagraphs(paragraphs: string[], scripts: ScriptLanguages = { latin: 'en', han: 'zh' }): ChunkDraft[] {
   const chunks: ChunkDraft[] = []
   let current: Sentence[] = []
 
@@ -81,11 +96,12 @@ export function chunkParagraphs(paragraphs: string[]): ChunkDraft[] {
     current = []
   }
 
-  for (const sentence of toSentences(paragraphs)) {
+  for (const sentence of toSentences(paragraphs, scripts)) {
     const size = current.reduce((n, s) => n + s.text.length + 1, 0)
-    const target = chunks.length === 0 ? FIRST_CHUNK_CHARS : CHUNK_TARGET_CHARS
+    const language = current[0]?.language ?? sentence.language
+    const target = sized(chunks.length === 0 ? FIRST_CHUNK_CHARS : CHUNK_TARGET_CHARS, language)
     const languageChanged = current.length > 0 && current[0].language !== sentence.language
-    const wouldOverflow = size + sentence.text.length > CHUNK_MAX_CHARS
+    const wouldOverflow = size + sentence.text.length > sized(CHUNK_MAX_CHARS, language)
     const atParagraph = sentence.paragraphStart && size >= target * 0.6
 
     if (languageChanged || wouldOverflow || size >= target || atParagraph) flush()

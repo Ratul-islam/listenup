@@ -1,9 +1,10 @@
 import { z } from 'zod'
+import { LANGS } from '../ingestion/text/language.js'
 
 export const preferencesBodySchema = z
   .object({
-    voiceEnId: z.string().max(64).optional(),
-    voiceBnId: z.string().max(64).optional(),
+    /** Preferred voice per language; only the languages given change */
+    voices: z.partialRecord(z.enum(LANGS), z.string().max(64)).optional(),
     speed: z.number().min(0.5).max(3).optional(),
     dailyGoalMinutes: z.number().int().min(5).max(600).optional(),
     autoPlayNext: z.boolean().optional(),

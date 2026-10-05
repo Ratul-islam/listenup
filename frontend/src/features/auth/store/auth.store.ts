@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 
+import { forgetPurchaser } from '@/features/billing/lib/purchases';
 import { audioEngine } from '@/features/player/engine/audio-engine';
 import { ApiError } from '@/lib/api/api-error';
 import { registerAuthHandlers } from '@/lib/api/client';
@@ -84,6 +85,7 @@ async function persistSession(session: AuthSession) {
 
 async function clearSession() {
   void audioEngine.close();
+  void forgetPurchaser();
   await Promise.all([secureStorage.remove(REFRESH_TOKEN_KEY), secureStorage.remove(USER_KEY)]);
   useAuthStore.setState({ status: 'signedOut', user: null, accessToken: null });
   queryClient.clear();

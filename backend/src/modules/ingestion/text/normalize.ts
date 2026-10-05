@@ -9,8 +9,8 @@ export function normalizeParagraphs(paragraphs: string[]) {
         .normalize('NFC')
         // control chars except newline/tab
         .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F­​﻿]/g, '')
-        // "exam-\nple" -> "example" (Latin only; Bangla rarely hyphenates)
-        .replace(/([A-Za-z])-\s*\n\s*([a-z])/g, '$1$2')
+        // "exam-\nple" -> "example" (Latin script, accents included; Bangla rarely hyphenates)
+        .replace(/(\p{Script=Latin})-\s*\n\s*(\p{Ll})/gu, '$1$2')
         .replace(/\s*\n\s*/g, ' ')
         .replace(/[ \t ]+/g, ' ')
         .trim(),

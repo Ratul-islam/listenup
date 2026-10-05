@@ -1,18 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { ALLOWED_UPLOADS } from '../../config/constants.js'
-import type { Document, DocumentChunk, PlaybackState } from '../../generated/prisma/client.js'
-import { queue, QUEUES, startQueue, type ProcessDocumentJob } from '../../lib/queue.js'
+import { Prisma, type Document, type DocumentChunk, type PlaybackState } from '../../generated/prisma/client.js'
+import { hasLiveJob, queue, QUEUES, startQueue, type ProcessDocumentJob, type TranslateDocumentJob } from '../../lib/queue.js'
 import { storage } from '../../lib/storage/storage.js'
 import { AppError } from '../../utils/AppError.js'
 import { UNTITLED } from '../ingestion/ingestion.service.js'
-import type { Lang } from '../ingestion/text/language.js'
+import { LANGS, type Lang } from '../ingestion/text/language.js'
 import { readExpressions } from '../expressions/expression-catalog.js'
 import { planFor } from '../tts/tts.service.js'
+import type { UsageService } from '../usage/usage.service.js'
+import type { VoiceDefinition } from '../voices/voice-catalog.js'
 import type { VoicesService } from '../voices/voices.service.js'
 import { env } from '../../config/env.js'
 import { CATEGORY_KINDS, type DocumentsRepository } from './documents.repository.js'
-import type { ListQuery, TextBody, UpdateBody, UploadCompleteBody, UploadStartBody, UrlBody } from './documents.schema.js'
+import { chatCompletion } from '../../lib/openrouter.js'
+import type { DigestBody, ListQuery, TextBody, TranslateBody, UpdateBody, UploadCompleteBody, UploadStartBody, UrlBody } from './documents.schema.js'
 
 type WithPlayback = Document & { playback?: PlaybackState[] }
 
@@ -36,7 +39,16 @@ export function toSummary(doc: WithPlayback) {
     chunkCount: doc.chunkCount,
     estimatedDurationSec: doc.estimatedDurationSec,
     usedOcr: doc.usedOcr,
+    keepClutter: doc.keepClutter,
+    translatedFromId: doc.translatedFromId,
+    inPodcast: doc.podcastAddedAt != null,
     autoExpression: doc.autoExpression,
+    narration: {
+      style: doc.narrationStyle,
+      strength: doc.narrationStrength,
+      // What "Make it expressive" detected, when the style is "auto"
+      detected: (doc.narrationBrief as { style?: string } | null)?.style ?? null,
+    },
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
     progress: state
@@ -56,6 +68,55 @@ export function toSummary(doc: WithPlayback) {
 const sourceKey = (userId: string, documentId: string, ext: string) => `documents/${userId}/${documentId}/source.${ext}`
 
 const UPLOAD_LINK_TTL_SECONDS = 15 * 60
+// How long a fresh "Make it expressive" request has to get its job queued
+const AUTO_EXPRESSION_GRACE_MS = 60_000
+
+const languageHint = (language?: string) => (language && language !== 'auto' ? language : null)
+
+const DIGEST_ITEMS = 5
+const DIGEST_CHARS_PER_ITEM = 6000
+const DIGEST_LOOKBACK_MS = 14 * 24 * 60 * 60_000
+const DIGEST_LANGUAGES: Record<Lang, string> = {
+  en: 'English',
+  bn: 'Bangla (Bengali)',
+  hi: 'Hindi',
+  es: 'Spanish',
+  pt: 'Brazilian Portuguese',
+  fr: 'French',
+  it: 'Italian',
+  ja: 'Japanese',
+  zh: 'Mandarin Chinese (Simplified characters)',
+  ur: 'Urdu',
+  id: 'Indonesian',
+}
+const DIGEST_TITLES: Record<Lang, string> = {
+  en: "Today's digest",
+  bn: 'আজকের সারসংক্ষেপ',
+  hi: 'आज का सार',
+  es: 'Resumen de hoy',
+  pt: 'Resumo de hoje',
+  fr: 'Le résumé du jour',
+  it: 'Il riepilogo di oggi',
+  ja: '今日のダイジェスト',
+  zh: '今日摘要',
+  ur: 'آج کا خلاصہ',
+  id: 'Ringkasan hari ini',
+}
+
+// For titles of translations ("Notes · Español")
+const LANGUAGE_LABELS: Record<Lang, string> = {
+  en: 'English',
+  bn: 'বাংলা',
+  hi: 'हिन्दी',
+  es: 'Español',
+  pt: 'Português',
+  fr: 'Français',
+  it: 'Italiano',
+  ja: '日本語',
+  zh: '中文',
+  ur: 'اردو',
+  id: 'Bahasa Indonesia',
+}
 
 /** Extension and kind of an upload, by file name */
 function uploadType(fileName: string) {
@@ -71,6 +132,7 @@ export class DocumentsService {
   constructor(
     private readonly documentsRepository: DocumentsRepository,
     private readonly voicesService: VoicesService,
+    private readonly usageService: UsageService,
   ) {}
 
   private async enqueue(job: ProcessDocumentJob) {
@@ -109,7 +171,15 @@ export class DocumentsService {
   }
 
   async get(userId: string, id: string) {
-    return toSummary(await this.owned(userId, id))
+    const doc = await this.owned(userId, id)
+    // The app polls this while "Make it expressive" runs. If the job is gone (its
+    // process restarted and it ran out of retries), say so instead of spinning forever.
+    // A just-started request gets a moment for its job to be queued.
+    if (doc.autoExpression === 'RUNNING' && Date.now() - doc.updatedAt.getTime() > AUTO_EXPRESSION_GRACE_MS && !(await hasLiveJob(QUEUES.autoExpression, id))) {
+      await this.documentsRepository.update(id, { autoExpression: 'FAILED' })
+      return toSummary({ ...doc, autoExpression: 'FAILED' })
+    }
+    return toSummary(doc)
   }
 
   /**
@@ -128,7 +198,7 @@ export class DocumentsService {
   }
 
   /** The file is in storage: create the document and start reading it. Safe to repeat. */
-  async completeUpload(userId: string, uploadId: string, { fileName }: UploadCompleteBody) {
+  async completeUpload(userId: string, uploadId: string, { fileName, language }: UploadCompleteBody) {
     const existing = await this.documentsRepository.findOwned(userId, uploadId)
     if (existing) return toSummary(existing)
 
@@ -150,13 +220,20 @@ export class DocumentsService {
       fileName: fileName.slice(0, 255),
       mimeType: mime,
       fileKey,
+      languageHint: languageHint(language),
     })
     await this.enqueue({ documentId: doc.id })
     return toSummary(doc)
   }
 
-  async createFromText(userId: string, { title, text }: TextBody) {
-    const doc = await this.documentsRepository.create({ userId, title: title || UNTITLED, kind: 'TEXT', mimeType: 'text/plain' })
+  async createFromText(userId: string, { title, text, language }: TextBody) {
+    const doc = await this.documentsRepository.create({
+      userId,
+      title: title || UNTITLED,
+      kind: 'TEXT',
+      mimeType: 'text/plain',
+      languageHint: languageHint(language),
+    })
     const fileKey = sourceKey(userId, doc.id, 'txt')
     await storage.put(fileKey, Buffer.from(text, 'utf8'), 'text/plain')
     const saved = await this.documentsRepository.update(doc.id, { fileKey })
@@ -164,11 +241,93 @@ export class DocumentsService {
     return toSummary(saved)
   }
 
-  async createFromUrl(userId: string, { url }: UrlBody) {
+  async createFromUrl(userId: string, { url, language }: UrlBody) {
     const host = new URL(url).hostname.replace(/^www\./, '')
-    const doc = await this.documentsRepository.create({ userId, title: host, kind: 'WEB', sourceUrl: url, author: host })
+    const doc = await this.documentsRepository.create({ userId, title: host, kind: 'WEB', sourceUrl: url, author: host, languageHint: languageHint(language) })
     await this.enqueue({ documentId: doc.id })
     return toSummary(doc)
+  }
+
+  /**
+   * "Translate": a new document in another language, beside the original.
+   * The translation runs in the background and then imports like pasted text.
+   */
+  async translate(userId: string, id: string, { language }: TranslateBody) {
+    const source = await this.owned(userId, id)
+    if (source.status !== 'READY') throw new AppError('This document is still being prepared', 409, 'DOCUMENT_NOT_READY')
+    if (source.language === language) throw new AppError(`This document is already in ${LANGUAGE_LABELS[language]}`, 400, 'SAME_LANGUAGE')
+    await this.usageService.assertCanTranslate(userId, source.charCount)
+
+    const doc = await this.documentsRepository.create({
+      userId,
+      folderId: source.folderId,
+      title: `${source.title} · ${LANGUAGE_LABELS[language]}`.slice(0, 200),
+      author: source.author,
+      // Same shelf category as the original; the text itself is read as plain text
+      kind: source.kind,
+      mimeType: 'text/plain',
+      sourceUrl: source.sourceUrl,
+      languageHint: language,
+      translatedFromId: source.id,
+    })
+    await startQueue()
+    await queue.send(QUEUES.translateDocument, { documentId: doc.id, sourceId: source.id, language } satisfies TranslateDocumentJob)
+    return toSummary(doc)
+  }
+
+  /**
+   * "Today's digest": a short spoken briefing on what the listener added or
+   * played in the last two weeks, written by a cheap text model and added to
+   * the shelf like pasted text. One per day; asking again returns it.
+   */
+  async digest(userId: string, { day }: DigestBody) {
+    const existing = await this.documentsRepository.findDigest(userId, day)
+    if (existing) return toSummary(existing)
+
+    const recent = await this.documentsRepository.recentForDigest(userId, new Date(Date.now() - DIGEST_LOOKBACK_MS), DIGEST_ITEMS)
+    if (!recent.length) throw new AppError('Add or listen to something first, and your digest will cover it.', 404, 'NOTHING_TO_DIGEST')
+
+    const languages = recent.map((d) => d.language).filter((l): l is Lang => !!l && l !== 'mixed')
+    const language = (languages.sort((a, b) => languages.filter((x) => x === b).length - languages.filter((x) => x === a).length)[0] ?? 'en') as Lang
+    const sources = recent
+      .map((d, i) => `### ${i + 1}. ${d.title}\n${d.chunks.map((c) => c.text).join(' ').slice(0, DIGEST_CHARS_PER_ITEM)}`)
+      .join('\n\n')
+    const text = (
+      await chatCompletion(
+        {
+          model: env.OPENROUTER_TEXT_MODEL,
+          system:
+            `Write a friendly spoken morning briefing in ${DIGEST_LANGUAGES[language]} about the listener's recent reading below. ` +
+            'Open with one warm sentence, then give each item a short paragraph with its main points, then close with one sentence. ' +
+            'About 250 to 400 words in total. Plain sentences only, no headings, lists, emojis or markdown, because it will be read aloud.',
+          content: [{ type: 'text', text: sources }],
+          purpose: 'daily digest',
+        },
+        90_000,
+      )
+    ).trim()
+    if (!text) throw new AppError("Couldn't write today's digest. Try again.", 502, 'PROVIDER_ERROR')
+
+    try {
+      const doc = await this.documentsRepository.create({
+        userId,
+        title: `${DIGEST_TITLES[language]} · ${day}`,
+        kind: 'TEXT',
+        mimeType: 'text/plain',
+        languageHint: language,
+        digestDay: day,
+      })
+      const fileKey = sourceKey(userId, doc.id, 'txt')
+      await storage.put(fileKey, Buffer.from(text, 'utf8'), 'text/plain')
+      const saved = await this.documentsRepository.update(doc.id, { fileKey })
+      await this.enqueue({ documentId: doc.id })
+      return toSummary(saved)
+    } catch (e) {
+      // Asked twice at once: the other request made it
+      const other = (e as { code?: string }).code === 'P2002' ? await this.documentsRepository.findDigest(userId, day) : null
+      if (other) return toSummary(other)
+      throw e
+    }
   }
 
   /** Renames and/or moves a document between folders and the shelf */
@@ -181,17 +340,17 @@ export class DocumentsService {
     return toSummary({ ...saved, playback: doc.playback })
   }
 
-  async reprocess(userId: string, id: string, ocr: boolean) {
+  async reprocess(userId: string, id: string, ocr: boolean, keepClutter?: boolean) {
     const doc = await this.owned(userId, id)
     if (doc.status === 'PROCESSING' || doc.status === 'PENDING') {
       throw new AppError('This document is still being prepared', 409, 'DOCUMENT_BUSY')
     }
-    if (ocr && !['PDF', 'IMAGE'].includes(doc.kind)) {
+    if (ocr && (!['PDF', 'IMAGE'].includes(doc.kind) || doc.translatedFromId)) {
       throw new AppError('Only PDFs and photos can be re-read with OCR', 400, 'OCR_NOT_SUPPORTED')
     }
     await Promise.all([storage.deletePrefix(`audio/${doc.id}`), storage.deletePrefix(`exports/${doc.id}`)])
     // New chunks start without emotions, so suggestions can run again
-    const saved = await this.documentsRepository.update(id, { status: 'PENDING', error: null, autoExpression: null })
+    const saved = await this.documentsRepository.update(id, { status: 'PENDING', error: null, autoExpression: null, narrationStyle: null, narrationStrength: null, narrationBrief: Prisma.DbNull, keepClutter })
     await this.enqueue({ documentId: id, forceOcr: ocr })
     return toSummary({ ...saved, playback: doc.playback })
   }
@@ -216,19 +375,22 @@ export class DocumentsService {
 
     const prefs = await this.voicesService.getPreferences(userId)
     const chosen = voiceId ?? doc.playback[0]?.voiceId ?? null
-    const resolved = { en: this.voicesService.resolve(chosen, 'en', prefs), bn: this.voicesService.resolve(chosen, 'bn', prefs) }
+    const resolved = Object.fromEntries(LANGS.map((lang) => [lang, this.voicesService.resolve(chosen, lang, prefs)])) as Record<Lang, VoiceDefinition>
+    const perLang = <T>(pick: (v: VoiceDefinition) => T) => Object.fromEntries(LANGS.map((lang) => [lang, pick(resolved[lang])])) as Record<Lang, T>
 
     const [chunks, clips] = await Promise.all([
       this.documentsRepository.listChunks(id),
-      this.documentsRepository.readyClips(id, [resolved.en.id, resolved.bn.id]),
+      this.documentsRepository.readyClips(id, LANGS.map((lang) => resolved[lang].id)),
     ])
     const known = new Map(clips.map((c) => [`${c.chunk.index}:${c.voiceId}`, c]))
 
     return {
       document: toSummary(doc),
-      voices: { en: resolved.en.id, bn: resolved.bn.id },
+      voices: perLang((v) => v.id),
       /** Whether each language's voice can take emotions */
-      expressive: { en: resolved.en.expressive, bn: resolved.bn.expressive },
+      expressive: perLang((v) => v.expressive),
+      /** Each language's voice level; "phone" voices are voiced by the app itself */
+      tiers: perLang((v) => v.tier),
       speed: doc.playback[0]?.speed ?? prefs.speed,
       chunks: chunks.map((c: DocumentChunk) => {
         const voice = resolved[c.language as Lang]

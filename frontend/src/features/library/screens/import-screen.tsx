@@ -15,12 +15,14 @@ import { IconButton } from '@/components/ui/icon-button';
 import { IconTile } from '@/components/ui/icon-tile';
 import { InlineAlert } from '@/components/ui/inline-alert';
 import { PrimaryButton } from '@/components/ui/primary-button';
+import { ChoiceChips } from '@/components/ui/settings';
 import { Text } from '@/components/ui/text';
 import { getErrorMessage } from '@/lib/api/api-error';
 import { haptics } from '@/lib/haptics';
+import { LANGS, LANGUAGE_NAMES } from '@/lib/languages';
 import { useTokens } from '@/lib/use-tokens';
 
-import type { PickedFile } from '../api/documents.api';
+import type { ImportLanguage, PickedFile } from '../api/documents.api';
 import { useImportFile, useImportText, useImportUrl } from '../hooks/use-documents';
 
 const FILE_TYPES = [
@@ -59,6 +61,7 @@ export default function ImportScreen() {
   const [text, setText] = useState('');
   const [title, setTitle] = useState('');
   const [url, setUrl] = useState('');
+  const [language, setLanguage] = useState<ImportLanguage>('auto');
   const importFile = useImportFile();
   const importText = useImportText();
   const importUrl = useImportUrl();
@@ -72,7 +75,7 @@ export default function ImportScreen() {
   };
 
   const upload = (file: PickedFile) =>
-    importFile.mutate(file, { onSuccess: (doc) => done(doc.title), onError: haptics.error });
+    importFile.mutate({ file, language }, { onSuccess: (doc) => done(doc.title), onError: haptics.error });
 
   const pickFile = async () => {
     const res = await DocumentPicker.getDocumentAsync({ type: FILE_TYPES, copyToCacheDirectory: true });
@@ -125,7 +128,18 @@ export default function ImportScreen() {
             <Option icon={<Globe size={20} color={t.accent} />} title="Web article" detail="Paste a link to an article" onPress={() => setPanel(panel === 'link' ? null : 'link')} disabled={busy} />
             <Option icon={<NotebookPen size={20} color={t.accent} />} title="Paste text" detail="Notes, emails, anything you copied" onPress={() => setPanel(panel === 'text' ? null : 'text')} disabled={busy} />
           </GlassCard>
-          <Text variant="caption" className="px-1">Bangla and English both work, including scanned pages.</Text>
+          <View className="gap-1">
+            <Text variant="label" className="px-1 text-muted">Language</Text>
+            <View className="-mx-3">
+              <ChoiceChips
+                options={['auto', ...LANGS] as ImportLanguage[]}
+                value={language}
+                format={(v) => (v === 'auto' ? 'Detect' : LANGUAGE_NAMES[v])}
+                onChange={setLanguage}
+              />
+            </View>
+            <Text variant="caption" className="px-1">Documents can mix languages, and scanned pages work too.</Text>
+          </View>
 
           {importFile.isPending ? (
             <PrimaryButton label="Uploading…" isLoading onPress={() => {}} />
@@ -156,7 +170,7 @@ export default function ImportScreen() {
                 label="Add article"
                 isLoading={importUrl.isPending}
                 isDisabled={!/^https?:\/\/\S+\.\S+/.test(url.trim())}
-                onPress={() => importUrl.mutate(url.trim(), { onSuccess: (doc) => done(doc.title), onError: haptics.error })}
+                onPress={() => importUrl.mutate({ url: url.trim(), language }, { onSuccess: (doc) => done(doc.title), onError: haptics.error })}
               />
             </GlassCard>
           ) : null}
@@ -190,7 +204,7 @@ export default function ImportScreen() {
                 isDisabled={!text.trim()}
                 onPress={() =>
                   importText.mutate(
-                    { text: text.trim(), title: title.trim() || undefined },
+                    { text: text.trim(), title: title.trim() || undefined, language },
                     { onSuccess: (doc) => done(doc.title), onError: haptics.error },
                   )
                 }

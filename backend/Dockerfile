@@ -36,6 +36,8 @@ ENV NODE_ENV=production \
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# Static files the API serves (the podcast cover)
+COPY assets ./assets
 COPY package.json ./
 USER node
 EXPOSE 8000

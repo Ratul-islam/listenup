@@ -1,9 +1,10 @@
 import { api } from '@/lib/api/client';
+import type { Lang } from '@/lib/languages';
 
 export interface ChunkAudio {
   index: number;
   voiceId: string;
-  language: 'en' | 'bn';
+  language: Lang;
   durationMs: number;
   mimeType: string;
   url: string;

@@ -27,6 +27,20 @@ export class DocumentsRepository {
     })
   }
 
+  findDigest(userId: string, digestDay: string) {
+    return this.db.document.findUnique({ where: { userId_digestDay: { userId, digestDay } }, include: { playback: { where: { userId } } } })
+  }
+
+  /** Recently added or played documents for the daily digest (never earlier digests) */
+  recentForDigest(userId: string, since: Date, take: number) {
+    return this.db.document.findMany({
+      where: { userId, status: 'READY', digestDay: null, OR: [{ createdAt: { gte: since } }, { playback: { some: { userId, updatedAt: { gte: since } } } }] },
+      orderBy: { updatedAt: 'desc' },
+      take,
+      include: { chunks: { orderBy: { index: 'asc' }, take: 20, select: { text: true } } },
+    })
+  }
+
   list(userId: string, { category, q, sort, folder }: ListQuery) {
     return this.db.document.findMany({
       where: {

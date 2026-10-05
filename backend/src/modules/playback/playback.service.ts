@@ -4,9 +4,37 @@ import { storage } from '../../lib/storage/storage.js'
 import { AppError } from '../../utils/AppError.js'
 import type { Lang } from '../ingestion/text/language.js'
 import type { TtsService } from '../tts/tts.service.js'
+import { isServerVoice } from '../voices/voice-catalog.js'
+import { NO_EXPRESSIONS, readExpressions, sliceExpressions } from '../expressions/expression-catalog.js'
+import { planAtLeast } from '../plans/plan-catalog.js'
 import type { VoicesService } from '../voices/voices.service.js'
 import type { PlaybackRepository } from './playback.repository.js'
-import type { BookmarkBody, ProgressBody } from './playback.schema.js'
+import type { BookmarkBody, ProgressBody, VoiceNoteBody } from './playback.schema.js'
+
+// Spoken at the end of Free-plan voice notes
+const NOTE_TAG: Record<Lang, string> = {
+  en: 'Made with ListenUp.',
+  bn: 'ListenUp দিয়ে তৈরি।',
+  hi: 'ListenUp से बनाया गया।',
+  es: 'Hecho con ListenUp.',
+  pt: 'Feito com ListenUp.',
+  fr: 'Créé avec ListenUp.',
+  it: 'Creato con ListenUp.',
+  ja: 'ListenUpで作成しました。',
+  zh: '由 ListenUp 制作。',
+  ur: 'ListenUp کے ساتھ بنایا گیا۔',
+  id: 'Dibuat dengan ListenUp.',
+}
+const NOTE_URL_TTL_SECONDS = 60 * 60
+
+/** "ListenUp – The first few words.mp3" */
+const noteFileName = (text: string) => {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  // Japanese and Chinese have no spaces between words: take the first characters instead
+  const words = flat.includes(' ') ? flat.split(' ').slice(0, 6).join(' ') : flat.slice(0, 20)
+  const safe = words.replace(/[\\/:*?"<>|]/g, '').slice(0, 60).trim()
+  return `ListenUp – ${safe || 'voice note'}.mp3`
+}
 
 const shiftDay = (day: string, delta: number) => {
   const d = new Date(`${day}T00:00:00Z`)
@@ -19,6 +47,8 @@ export class PlaybackService {
     private readonly playbackRepository: PlaybackRepository,
     private readonly voicesService: VoicesService,
     private readonly ttsService: TtsService,
+    /** After listening time is recorded (e.g. to give an invite's reward once the friend has listened) */
+    private readonly onListened: (userId: string) => Promise<unknown> = async () => {},
   ) {}
 
   private async readyDocument(userId: string, documentId: string) {
@@ -40,6 +70,7 @@ export class PlaybackService {
     const prefs = await this.voicesService.getPreferences(userId)
     const chosen = voiceId ?? doc.playback[0]?.voiceId
     const voice = this.voicesService.resolve(chosen, chunk.language as Lang, prefs)
+    if (!isServerVoice(voice)) throw new AppError('Phone voices play on the device, not from the server.', 400, 'PHONE_VOICE')
     const clip = await this.ttsService.ensureClip(userId, chunk, voice)
 
     this.prefetch(userId, documentId, index + 1, chosen, prefs)
@@ -59,11 +90,45 @@ export class PlaybackService {
       const chunks: DocumentChunk[] = await this.playbackRepository.findChunks(documentId, from, PREFETCH_CHUNKS)
       for (const chunk of chunks) {
         const voice = this.voicesService.resolve(chosen, chunk.language as Lang, prefs)
-        await this.ttsService.ensureClip(userId, chunk, voice)
+        if (isServerVoice(voice)) await this.ttsService.ensureClip(userId, chunk, voice)
       }
     })().catch((e) => {
       if ((e as { code?: string }).code !== 'USAGE_LIMIT_REACHED') console.warn('[playback] prefetch failed', e)
     })
+  }
+
+  /**
+   * A sentence or paragraph as an MP3 to share (e.g. a WhatsApp voice note),
+   * with the listener's emotions. Free plans end with "Made with ListenUp".
+   * Phone voices make voice notes on the device instead.
+   */
+  async voiceNote(userId: string, documentId: string, { chunkIndex, start, end, voiceId }: VoiceNoteBody) {
+    const doc = await this.readyDocument(userId, documentId)
+    const chunk = await this.playbackRepository.findChunk(documentId, chunkIndex)
+    if (!chunk) throw new AppError('That part of the document does not exist', 404, 'CHUNK_NOT_FOUND')
+    const from = Math.min(start, chunk.text.length)
+    const to = Math.min(end, chunk.text.length)
+    const text = chunk.text.slice(from, to).trim()
+    if (!text) throw new AppError('Pick some text to send', 400, 'EMPTY_SELECTION')
+    const lead = chunk.text.slice(from, to).indexOf(text)
+
+    const prefs = await this.voicesService.getPreferences(userId)
+    const voice = this.voicesService.resolve(voiceId ?? doc.playback[0]?.voiceId, chunk.language as Lang, prefs)
+    if (!isServerVoice(voice)) throw new AppError('Phone voices make voice notes on the device.', 400, 'PHONE_VOICE')
+
+    const expressions = sliceExpressions(readExpressions(chunk.expressions), from + lead, from + lead + text.length)
+    let note = await this.ttsService.voiceText(userId, text, expressions, voice, chunk.narration)
+    const free = !planAtLeast((await this.playbackRepository.findUserPlan(userId))?.plan, 'plus')
+    if (free && note.mimeType === 'audio/mpeg') {
+      const tag = await this.ttsService.voiceText(null, NOTE_TAG[voice.language], NO_EXPRESSIONS, voice)
+      note = await this.ttsService.joinMp3([note, tag])
+    }
+    return {
+      url: await storage.signedUrl(note.storageKey, NOTE_URL_TTL_SECONDS),
+      durationMs: note.durationMs,
+      mimeType: note.mimeType,
+      fileName: noteFileName(text),
+    }
   }
 
   async saveProgress(userId: string, documentId: string, body: ProgressBody) {
@@ -81,6 +146,7 @@ export class PlaybackService {
       }),
       listened > 0 ? this.playbackRepository.addListening(userId, body.day, Math.round(listened)) : null,
     ])
+    if (listened > 0) this.onListened(userId).catch((e) => console.warn('[playback] after-listening check failed', e))
     return state
   }
 

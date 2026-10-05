@@ -12,12 +12,16 @@ import { IconButton } from '@/components/ui/icon-button';
 import { InlineAlert } from '@/components/ui/inline-alert';
 import { PrimaryButton } from '@/components/ui/primary-button';
 import { Text } from '@/components/ui/text';
+import { narrationStyleMeta } from '@/features/expression/catalog';
+import { DescribeSheet, type DescribeTarget } from '@/features/expression/components/describe-sheet';
 import { ExpressionSheet, type ExpressionTarget } from '@/features/expression/components/expression-sheet';
+import { ExpressiveSheet } from '@/features/expression/components/expressive-sheet';
 import { useAutoExpression } from '@/features/expression/hooks/use-auto-expression';
 import { ExportSheet } from '@/features/exports/components/export-panel';
 import { getErrorMessage } from '@/lib/api/api-error';
 import { haptics } from '@/lib/haptics';
 import { useTokens } from '@/lib/use-tokens';
+import { phoneVoice } from '@/modules/phone-voice';
 
 import { playbackApi, type Bookmark as BookmarkItem } from '../api/playback.api';
 import { PlayerControls } from '../components/player-controls';
@@ -37,6 +41,7 @@ export default function PlayerScreen() {
   const status = usePlayerStore((s) => s.status);
   const document = usePlayerStore((s) => s.document);
   const error = usePlayerStore((s) => s.error);
+  const errorCode = usePlayerStore((s) => s.errorCode);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const { positionMs } = usePlayerTimeline();
   const [view, setView] = useState<'live' | 'transcript'>('live');
@@ -44,6 +49,8 @@ export default function PlayerScreen() {
   const [bookmarks, setBookmarks] = useState<BookmarkItem[] | null>(null);
   const [saved, setSaved] = useState(false);
   const [editing, setEditing] = useState<ExpressionTarget | null>(null);
+  const [describing, setDescribing] = useState<DescribeTarget | null>(null);
+  const [directing, setDirecting] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const resumeAfterEdit = useRef(false);
@@ -59,6 +66,20 @@ export default function PlayerScreen() {
     setEditing(null);
     if (!applied && resumeAfterEdit.current) audioEngine.play();
   };
+  const describe = (target: DescribeTarget) => {
+    if (!editing) {
+      resumeAfterEdit.current = usePlayerStore.getState().isPlaying;
+      audioEngine.pause();
+    }
+    setEditing(null);
+    setDescribing(target);
+  };
+  const closeDescribe = (applied: boolean) => {
+    setDescribing(null);
+    if (!applied && resumeAfterEdit.current) audioEngine.play();
+  };
+  const style = document?.narration?.style;
+  const styleLabel = style === 'auto' ? (document?.narration?.detected ? narrationStyleMeta[document.narration.detected] : null) : style ? narrationStyleMeta[style] : null;
 
   // Swipe down on the header to return to the shelf
   const swipeDown = Gesture.Pan()
@@ -141,12 +162,26 @@ export default function PlayerScreen() {
           </>
         ) : (
           <>
-            <Transcript onEditLine={editLine} />
+            <Transcript onEditLine={editLine} onDescribe={describe} />
             <TranscriptToggle onPress={() => setView('live')} />
           </>
         )}
 
-        <InlineAlert message={error} />
+        <InlineAlert
+          message={error}
+          action={
+            errorCode === 'VOICE_MISSING' ? (
+              <PrimaryButton
+                label="Download the voice"
+                size="md"
+                variant="secondary"
+                onPress={() => {
+                  if (!phoneVoice.openInstallVoiceData()) toast.show({ variant: 'danger', label: "This phone can't download voices." });
+                }}
+              />
+            ) : undefined
+          }
+        />
         <View className="gap-3">
           <Scrubber />
           <PlayerControls />
@@ -174,12 +209,12 @@ export default function PlayerScreen() {
         />
         <SheetAction
           icon={auto.running ? <Spinner size="sm" color={t.accent} /> : <Sparkles size={18} color={t.accent} />}
-          label={auto.running ? 'Adding emotions…' : 'Make it expressive'}
-          detail="AI adds emotions to the lines ahead. Change any of them by holding the line."
-          disabled={auto.running || auto.busy}
+          label={auto.running ? 'Directing your story…' : 'Make it expressive'}
+          detail={styleLabel ? `${styleLabel.emoji} ${styleLabel.label} · Change the style or direct again` : 'Pick a style, or let AI find the mood and characters'}
+          disabled={auto.busy}
           onPress={() => {
             setMenu(false);
-            void auto.start();
+            setDirecting(true);
           }}
         />
         {auto.hasAny ? (
@@ -196,7 +231,9 @@ export default function PlayerScreen() {
         ) : null}
       </ActionSheet>
 
-      <ExpressionSheet target={editing} onClose={closeEditor} />
+      <ExpressionSheet target={editing} onClose={closeEditor} onDescribe={describe} />
+      <DescribeSheet target={describing} onClose={closeDescribe} />
+      <ExpressiveSheet visible={directing} onClose={() => setDirecting(false)} />
       <ExportSheet document={exporting ? document : null} onClose={() => setExporting(false)} />
 
       <ActionSheet visible={removing} onClose={() => setRemoving(false)} title="Remove emotions?">

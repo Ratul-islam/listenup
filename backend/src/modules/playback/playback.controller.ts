@@ -8,8 +8,7 @@ import type {
   ChunkParams,
   DocumentParams,
   ProgressBody,
-  StatsQuery,
-} from './playback.schema.js'
+  StatsQuery, VoiceNoteBody } from './playback.schema.js'
 
 export class PlaybackController {
   constructor(private readonly playbackService: PlaybackService) {}
@@ -17,6 +16,11 @@ export class PlaybackController {
   audio = async (request: FastifyRequest<{ Params: ChunkParams; Querystring: AudioQuery }>, reply: FastifyReply) => {
     const { documentId, index } = request.params
     const data = await this.playbackService.audio(request.user.sub, documentId, index, request.query.voiceId)
+    return sendSuccess(reply, { data })
+  }
+
+  voiceNote = async (request: FastifyRequest<{ Params: DocumentParams; Body: VoiceNoteBody }>, reply: FastifyReply) => {
+    const data = await this.playbackService.voiceNote(request.user.sub, request.params.documentId, request.body)
     return sendSuccess(reply, { data })
   }
 

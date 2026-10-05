@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { playbackApi } from '@/features/player/api/playback.api';
+import type { Lang } from '@/lib/languages';
 
-import { documentsApi, type PickedFile } from '../api/documents.api';
+import { documentsApi, type ImportLanguage, type PickedFile } from '../api/documents.api';
 import type { Category, DocumentList, SortOrder } from '../types';
 
 export const documentsKey = ['documents'] as const;
@@ -24,14 +25,17 @@ export function useListeningStats() {
 }
 
 /** Documents and folder item counts both change when documents do */
-function useInvalidateDocuments() {
+export function useInvalidateDocuments() {
   const client = useQueryClient();
   return () => Promise.all([client.invalidateQueries({ queryKey: documentsKey }), client.invalidateQueries({ queryKey: ['folders'] })]);
 }
 
 export function useImportFile() {
   const invalidate = useInvalidateDocuments();
-  return useMutation({ mutationFn: (file: PickedFile) => documentsApi.upload(file), onSuccess: invalidate });
+  return useMutation({
+    mutationFn: ({ file, language }: { file: PickedFile; language?: ImportLanguage }) => documentsApi.upload(file, language),
+    onSuccess: invalidate,
+  });
 }
 
 export function useImportText() {
@@ -41,7 +45,10 @@ export function useImportText() {
 
 export function useImportUrl() {
   const invalidate = useInvalidateDocuments();
-  return useMutation({ mutationFn: documentsApi.fromUrl, onSuccess: invalidate });
+  return useMutation({
+    mutationFn: ({ url, language }: { url: string; language?: ImportLanguage }) => documentsApi.fromUrl(url, language),
+    onSuccess: invalidate,
+  });
 }
 
 export function useRenameDocument() {
@@ -51,7 +58,15 @@ export function useRenameDocument() {
 
 export function useReprocessDocument() {
   const invalidate = useInvalidateDocuments();
-  return useMutation({ mutationFn: ({ id, ocr }: { id: string; ocr: boolean }) => documentsApi.reprocess(id, ocr), onSuccess: invalidate });
+  return useMutation({
+    mutationFn: ({ id, ocr, keepClutter }: { id: string; ocr: boolean; keepClutter?: boolean }) => documentsApi.reprocess(id, ocr, keepClutter),
+    onSuccess: invalidate,
+  });
+}
+
+export function useTranslateDocument() {
+  const invalidate = useInvalidateDocuments();
+  return useMutation({ mutationFn: ({ id, language }: { id: string; language: Lang }) => documentsApi.translate(id, language), onSuccess: invalidate });
 }
 
 export function useDeleteDocument() {

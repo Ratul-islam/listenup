@@ -1,12 +1,26 @@
 import { create } from 'zustand';
 
 import type { DocumentSummary, Lang, ReaderChunk } from '@/features/library/types';
+import type { VoiceTier } from '@/features/voices/api/voices.api';
+import { perLanguage } from '@/lib/languages';
 
 export type PlayerStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+/** A one-off message for the listener (shown as a toast), e.g. after switching to the phone voice */
+export interface PlayerNotice {
+  message: string;
+  /** Offer the plans page alongside it */
+  showPlans?: boolean;
+  /** Offer a rewarded ad for more Natural minutes instead, when one is ready (Free) */
+  offerAd?: boolean;
+}
 
 export interface PlayerState {
   status: PlayerStatus;
   error: string | null;
+  /** Machine-readable code of `error`, e.g. VOICE_MISSING */
+  errorCode: string | null;
+  notice: PlayerNotice | null;
   documentId: string | null;
   document: DocumentSummary | null;
   chunks: ReaderChunk[];
@@ -14,6 +28,8 @@ export interface PlayerState {
   voices: Record<Lang, string>;
   /** Whether those voices can take emotions */
   expressive: Record<Lang, boolean>;
+  /** Those voices' levels; "phone" voices are voiced on this device */
+  tiers: Record<Lang, VoiceTier>;
   /** Voice the listener picked for this document */
   voiceId: string | null;
   chunkIndex: number;
@@ -30,11 +46,15 @@ export interface PlayerState {
 export const initialPlayerState: PlayerState = {
   status: 'idle',
   error: null,
+  errorCode: null,
+  notice: null,
   documentId: null,
   document: null,
   chunks: [],
-  voices: { en: 'nova', bn: 'nusrat' },
-  expressive: { en: true, bn: true },
+  // Replaced by the server's choices as soon as a document opens
+  voices: perLanguage(() => ''),
+  expressive: perLanguage(() => false),
+  tiers: perLanguage(() => 'natural'),
   voiceId: null,
   chunkIndex: 0,
   positionMs: 0,

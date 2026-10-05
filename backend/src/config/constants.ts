@@ -37,7 +37,7 @@ export const FIRST_CHUNK_CHARS = 180
 export const CHUNK_TARGET_CHARS = 420
 export const CHUNK_MAX_CHARS = 700
 // Reading speed at 1x, for estimates before audio exists
-export const CHARS_PER_SECOND = { en: 14.5, bn: 12 } as const
+export const CHARS_PER_SECOND = { en: 14.5, bn: 12, hi: 13, es: 15, pt: 15, fr: 15, it: 15, ja: 7, zh: 4.5, ur: 12, id: 15 } as const
 // Chunks generated ahead of the one requested
 export const PREFETCH_CHUNKS = 2
 
@@ -46,3 +46,15 @@ export const SIGNED_URL_TTL_SECONDS = 6 * 60 * 60
 export const MAX_LISTEN_REPORT_SECONDS = 120
 // A day counts toward the streak after this much listening
 export const STREAK_MIN_SECONDS = 60
+
+// Rewarded ads (Free plan): Natural minutes per ad, and ads rewarded per day
+export const AD_REWARD_MINUTES = 10
+export const AD_REWARDS_PER_DAY = 3
+
+// Invites: Expressive minutes for both people, and how many invites one person is rewarded for
+export const INVITE_REWARD_MINUTES = 10
+export const INVITE_MAX_REWARDS = 10
+// The friend has listened this long (and verified their email) before the reward is given
+export const INVITE_MIN_LISTEN_SEC = 5 * 60
+// New accounts can enter a friend's code for this long
+export const INVITE_REDEEM_DAYS = 14

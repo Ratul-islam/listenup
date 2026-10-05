@@ -1,5 +1,6 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { prisma } from '../../config/db.js'
+import { createUsageService } from '../usage/usage.factory.js'
 import { VoicesRepository } from '../voices/voices.repository.js'
 import { VoicesService } from '../voices/voices.service.js'
 import { DocumentsController } from './documents.controller.js'
@@ -9,7 +10,9 @@ import {
   listQuerySchema,
   readerQuerySchema,
   reprocessBodySchema,
+  digestBodySchema,
   textBodySchema,
+  translateBodySchema,
   updateBodySchema,
   uploadCompleteSchema,
   uploadParamsSchema,
@@ -21,7 +24,7 @@ import { DocumentsService } from './documents.service.js'
 const importLimit = { rateLimit: { max: 20, timeWindow: '1 minute' } }
 
 const documentsRoutes: FastifyPluginAsyncZod = async (app) => {
-  const service = new DocumentsService(new DocumentsRepository(prisma), new VoicesService(new VoicesRepository(prisma)))
+  const service = new DocumentsService(new DocumentsRepository(prisma), new VoicesService(new VoicesRepository(prisma)), createUsageService())
   const controller = new DocumentsController(service)
 
   app.addHook('preHandler', app.verifyAccess)
@@ -36,10 +39,12 @@ const documentsRoutes: FastifyPluginAsyncZod = async (app) => {
   )
   app.post('/text', { schema: { body: textBodySchema }, config: importLimit }, controller.createFromText)
   app.post('/url', { schema: { body: urlBodySchema }, config: importLimit }, controller.createFromUrl)
+  app.post('/digest', { schema: { body: digestBodySchema }, config: importLimit }, controller.digest)
   app.get('/:id', { schema: { params: idParamsSchema } }, controller.get)
   app.patch('/:id', { schema: { params: idParamsSchema, body: updateBodySchema } }, controller.update)
   app.delete('/:id', { schema: { params: idParamsSchema } }, controller.remove)
   app.post('/:id/reprocess', { schema: { params: idParamsSchema, body: reprocessBodySchema }, config: importLimit }, controller.reprocess)
+  app.post('/:id/translations', { schema: { params: idParamsSchema, body: translateBodySchema }, config: importLimit }, controller.translate)
   app.get('/:id/reader', { schema: { params: idParamsSchema, querystring: readerQuerySchema } }, controller.reader)
 }
 

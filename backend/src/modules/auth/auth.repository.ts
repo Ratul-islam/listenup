@@ -15,6 +15,19 @@ export class AuthRepository {
     return this.db.refreshToken.findUnique({ where: { tokenHash }, include: { user: true } })
   }
 
+  findRefreshTokenById(id: string) {
+    return this.db.refreshToken.findUnique({ where: { id }, include: { user: true } })
+  }
+
+  /**
+   * Whether a session hasn't been ended. Logout and reuse detection revoke tokens
+   * without a successor; rotation always names one. (A live token can't be the test:
+   * a parallel refresh may not have saved its new token yet.)
+   */
+  async familyIsLive(familyId: string) {
+    return (await this.db.refreshToken.count({ where: { familyId, revokedAt: { not: null }, replacedById: null } })) === 0
+  }
+
   // Atomically retires a live token; false if it was already rotated or revoked
   async markRefreshTokenRotated(id: string, replacedById: string) {
     const { count } = await this.db.refreshToken.updateMany({

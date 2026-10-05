@@ -1,5 +1,9 @@
 import { z } from 'zod'
 import { MAX_PASTE_CHARS } from '../../config/constants.js'
+import { LANGS } from '../ingestion/text/language.js'
+
+/** Language picked at import; "auto" (or nothing) detects it */
+const languageField = z.enum(['auto', ...LANGS]).optional()
 
 export const CATEGORIES = ['all', 'books', 'articles', 'notes', 'scans'] as const
 
@@ -23,6 +27,7 @@ export const uploadStartSchema = z.object({
 /** Step 2: the file is in storage */
 export const uploadCompleteSchema = z.object({
   fileName: z.string().trim().min(1).max(255),
+  language: languageField,
 })
 
 export const uploadParamsSchema = z.object({ uploadId: z.uuid() })
@@ -30,10 +35,12 @@ export const uploadParamsSchema = z.object({ uploadId: z.uuid() })
 export const textBodySchema = z.object({
   title: z.string().trim().max(200).optional(),
   text: z.string().trim().min(1, 'Add some text to listen to').max(MAX_PASTE_CHARS),
+  language: languageField,
 })
 
 export const urlBodySchema = z.object({
   url: z.url('Enter a full link, starting with https://').max(2000),
+  language: languageField,
 })
 
 export const updateBodySchema = z
@@ -46,7 +53,16 @@ export const updateBodySchema = z
 
 export const reprocessBodySchema = z.object({
   ocr: z.boolean().default(false),
+  /** Change whether citations, links and reference lists are read aloud */
+  keepClutter: z.boolean().optional(),
 })
+
+export const digestBodySchema = z.object({
+  /** The listener's local date, so "today" follows their calendar */
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+})
+
+export const translateBodySchema = z.object({ language: z.enum(LANGS) })
 
 export const readerQuerySchema = z.object({
   voiceId: z.string().max(64).optional(),
@@ -62,3 +78,5 @@ export type UploadStartBody = z.infer<typeof uploadStartSchema>
 export type UploadCompleteBody = z.infer<typeof uploadCompleteSchema>
 export type UploadParams = z.infer<typeof uploadParamsSchema>
 export type ReaderQuery = z.infer<typeof readerQuerySchema>
+export type TranslateBody = z.infer<typeof translateBodySchema>
+export type DigestBody = z.infer<typeof digestBodySchema>

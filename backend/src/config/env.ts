@@ -35,6 +35,14 @@ const envSchema = z
     TTS_MODEL_MULTILINGUAL: z.string().default('google/gemini-3.8-flash-lite-tts'),
     // Cheap text model for "Make it expressive" emotion suggestions
     OPENROUTER_TEXT_MODEL: z.string().default('google/gemini-3.5-flash-lite'),
+    // Your own Kokoro server (Kokoro-FastAPI, OpenAI-compatible), e.g. http://kokoro:8880.
+    // When set, Natural voices are made there first and fall back to OpenRouter.
+    // An empty value (e.g. a blank dashboard field) means "not set"
+    KOKORO_URL: z.preprocess((v) => (v === '' ? undefined : v), z.url().optional()),
+    // Requests your Kokoro server may have at once (it voices one at a time); more go to OpenRouter
+    KOKORO_MAX_IN_FLIGHT: z.coerce.number().int().positive().default(2),
+    // "Make it expressive" on Pro: a stronger model follows characters and subtext better
+    OPENROUTER_DIRECTOR_PRO_MODEL: z.string().default('google/gemini-3.8-flash'),
 
     STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
     STORAGE_LOCAL_DIR: z.string().default('./storage'),
@@ -45,10 +53,30 @@ const envSchema = z
     S3_SECRET_ACCESS_KEY: optional,
 
     MAX_UPLOAD_MB: z.coerce.number().int().positive().default(25),
-    FREE_TIER_MONTHLY_CHARS: z.coerce.number().int().positive().default(300_000),
+    // Daily speech spending caps in US dollars (estimated). When free users together reach
+    // the first, or everyone the second, new audio pauses until midnight UTC.
+    FREE_DAILY_SPEND_CAP_USD: z.coerce.number().positive().default(2),
+    DAILY_SPEND_CAP_USD: z.coerce.number().positive().default(25),
+
+    // Google Play purchases through RevenueCat. The secret API key reads customers' current
+    // subscriptions; the webhook secret is the Authorization value set on RevenueCat's webhook.
+    REVENUECAT_SECRET_KEY: optional,
+    REVENUECAT_WEBHOOK_SECRET: optional,
+    // Rewarded ads: true once AdMob's server-side verification callback is set up
+    // (<API>/api/v1/ads/rewards/verify). Until then the app reports rewards itself.
+    ADMOB_SSV: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Android package name, for Google Play links in invites
+    ANDROID_PACKAGE: z.string().default('dev.ratul.tts'),
     PORT: z.coerce.number().int().positive().default(8000),
-    // Connections per process; keep it small where many instances run (e.g. Vercel)
-    DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
+    // Prisma's connections per process. Supabase's session pooler allows 15 clients
+    // in all, shared by every process (Render, local dev, migrations), so keep the sum
+    // of DATABASE_POOL_MAX + QUEUE_POOL_MAX across them under 15
+    DATABASE_POOL_MAX: z.coerce.number().int().positive().default(5),
+    // pg-boss's own connections (fetching and finishing jobs; the jobs' work uses Prisma's)
+    QUEUE_POOL_MAX: z.coerce.number().int().positive().default(3),
     // Run queue workers in this process. Local dev: true. Vercel API: false (a separate
     // always-on process runs `node dist/worker.js` instead)
     RUN_WORKERS: z

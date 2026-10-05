@@ -37,8 +37,37 @@ export class ExpressionsRepository {
     return this.db.documentChunk.update({ where: { id: chunkId }, data: { expressions: json(expressions) } })
   }
 
-  setChunks(updates: { id: string; expressions: ChunkExpressions }[]) {
-    return this.db.$transaction(updates.map((u) => this.db.documentChunk.update({ where: { id: u.id }, data: { expressions: json(u.expressions) } })))
+  /**
+   * One statement for every chunk: a whole document's worth of separate
+   * updates outlasts the transaction timeout over a distant database.
+   */
+  async setChunks(updates: { id: string; expressions: ChunkExpressions }[]) {
+    if (!updates.length) return
+    await this.db.$executeRaw`
+      UPDATE "document_chunks" AS c SET "expressions" = u.expressions
+      FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS u(id text, expressions jsonb)
+      WHERE c."id" = u.id`
+  }
+
+  findUserPlan(userId: string) {
+    return this.db.user.findUnique({ where: { id: userId }, select: { plan: true } })
+  }
+
+  /** The first chunks of a document, for sampling its opening */
+  firstChunks(documentId: string, take: number) {
+    return this.db.documentChunk.findMany({ where: { documentId }, orderBy: { index: 'asc' }, take, select: { text: true } })
+  }
+
+  setNarration(
+    documentId: string,
+    data: { narrationStyle?: string | null; narrationStrength?: string | null; narrationBrief?: Prisma.InputJsonValue | typeof Prisma.DbNull },
+  ) {
+    return this.db.document.update({ where: { id: documentId }, data, include: { playback: { take: 1 } } })
+  }
+
+  /** Every chunk is voiced with this narration from now on (null: plain) */
+  stampNarration(documentId: string, narration: string | null) {
+    return this.db.documentChunk.updateMany({ where: { documentId }, data: { narration } })
   }
 
   setAutoStatus(documentId: string, autoExpression: AutoExpressionStatus) {

@@ -11,7 +11,8 @@ import { extractPlainText } from './extractors/text.extractor.js'
 import type { Extracted } from './extractors/types.js'
 import { extractWeb } from './extractors/web.extractor.js'
 import { chunkParagraphs } from './text/chunker.js'
-import { documentLanguage } from './text/language.js'
+import { removeClutter } from './text/clutter.js'
+import { documentLanguage, documentScripts } from './text/language.js'
 import { makeExcerpt, normalizeParagraphs } from './text/normalize.js'
 
 // Errors worth retrying (provider hiccups, network) vs. problems with the file itself
@@ -23,6 +24,8 @@ export class IngestionService {
   constructor(private readonly documentsRepository: DocumentsRepository) {}
 
   private async extract(doc: Document, forceOcr: boolean): Promise<{ extracted: Extracted; usedOcr: boolean }> {
+    // A translation keeps its original's kind (for the shelf) but its text is plain
+    if (doc.translatedFromId) return { extracted: extractPlainText(await storage.get(doc.fileKey!), false), usedOcr: false }
     if (doc.kind === 'WEB') return { extracted: await extractWeb(doc.sourceUrl!), usedOcr: false }
 
     const file = await storage.get(doc.fileKey!)
@@ -58,6 +61,7 @@ export class IngestionService {
     try {
       const { extracted, usedOcr } = await this.extract(doc, forceOcr)
       let paragraphs = normalizeParagraphs(extracted.paragraphs)
+      if (!doc.keepClutter) paragraphs = removeClutter(paragraphs)
 
       let total = 0
       paragraphs = paragraphs.filter((p) => (total += p.length) <= MAX_DOCUMENT_CHARS)
@@ -69,7 +73,7 @@ export class IngestionService {
         )
       }
 
-      const chunks = chunkParagraphs(paragraphs)
+      const chunks = chunkParagraphs(paragraphs, documentScripts(paragraphs, doc.languageHint))
       const charCount = chunks.reduce((n, c) => n + c.text.length, 0)
 
       await this.documentsRepository.replaceChunks(doc.id, chunks, {

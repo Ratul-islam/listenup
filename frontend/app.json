@@ -115,7 +115,34 @@
         }
       ],
       "expo-document-picker",
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-sharing",
+        {
+          "android": {
+            "enabled": true,
+            "singleShareMimeTypes": [
+              "text/plain",
+              "text/markdown",
+              "application/pdf",
+              "application/epub+zip",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "image/*"
+            ],
+            "multipleShareMimeTypes": [
+              "image/*"
+            ]
+          }
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511",
+          "androidSdk": "classic"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

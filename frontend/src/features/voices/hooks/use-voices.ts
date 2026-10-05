@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { voicesApi, type VoicePreferences } from '../api/voices.api';
+import { voicesApi, type PreferencesUpdate, type VoicePreferences } from '../api/voices.api';
 
 export const voicesKey = ['voices'] as const;
 
@@ -21,10 +21,10 @@ export function useUpdatePreferences() {
 
   // Optimistic, so switches and chips respond instantly; rolled back if the save fails
   return useMutation({
-    mutationFn: (body: Partial<VoicePreferences>) => voicesApi.updatePreferences(body),
+    mutationFn: (body: PreferencesUpdate) => voicesApi.updatePreferences(body),
     onMutate: (body) => {
       const previous = client.getQueryData<VoicesData>(voicesKey)?.preferences;
-      write((p) => ({ ...p, ...body }));
+      write((p) => ({ ...p, ...body, voices: { ...p.voices, ...body.voices } }));
       return { previous };
     },
     onError: (_e, _body, context) => {

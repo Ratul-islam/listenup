@@ -1,3 +1,5 @@
+import type { Lang } from '@/lib/languages';
+
 /**
  * Display data for the built-in voices, used before sign-in (onboarding) and
  * as a fallback. The server's /voices endpoint is the source of truth once
@@ -6,7 +8,7 @@
 export interface VoicePreview {
   id: string;
   name: string;
-  language: 'en' | 'bn';
+  language: Lang;
   accent: string;
   style: string;
 }

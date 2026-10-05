@@ -2,8 +2,11 @@ import { Mp3Encoder } from '@breezystack/lamejs'
 
 const FRAME = 1152
 
-/** Raw 16-bit little-endian PCM → MP3 (mono speech at 64 kbps is ~0.5 MB per minute) */
-export function pcmToMp3(pcm: Buffer, sampleRate: number, kbps = 64) {
+/**
+ * Raw 16-bit little-endian PCM → MP3. Mono speech at 40 kbps is ~0.3 MB per
+ * minute and sounds the same as 64 kbps, with smaller storage and data bills.
+ */
+export function pcmToMp3(pcm: Buffer, sampleRate: number, kbps = 40) {
   const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.length / 2))
   const encoder = new Mp3Encoder(1, sampleRate, kbps)
   const parts: Buffer[] = []

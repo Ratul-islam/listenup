@@ -8,20 +8,37 @@ datasource db {
 }
 
 model User {
-  id                String    @id @default(uuid())
-  email             String    @unique
+  id                     String    @id @default(uuid())
+  email                  String    @unique
   // Null for accounts that only sign in through an OAuth provider
-  passwordHash      String?
-  name              String?
-  avatarUrl         String?
-  emailVerifiedAt   DateTime?
-  passwordChangedAt DateTime?
+  passwordHash           String?
+  name                   String?
+  avatarUrl              String?
+  emailVerifiedAt        DateTime?
+  passwordChangedAt      DateTime?
   // Plan id from config/plans.ts ("free", "plus", "pro")
-  plan              String    @default("free")
+  plan                   String    @default("free")
+  // When the paid plan's current period ends (from billing); null for Free or plans set by hand
+  planExpiresAt          DateTime?
+  // Whether the subscription renews at planExpiresAt (false once cancelled)
+  planRenews             Boolean   @default(false)
+  // Store country of the subscription (ISO code, from billing); some countries get reduced allowances
+  billingCountry         String?
+  // Seconds of the one-time Expressive trial used (Free plan)
+  expressiveTrialUsedSec Int       @default(0)
+  // Expressive seconds bought in Studio packs; spent after the monthly allowance, never expire
+  bonusExpressiveSec     Int       @default(0)
+  // Shared with friends; both get Expressive minutes once the friend starts listening
+  inviteCode             String?   @unique
+  // Who invited this user, and when the invite's reward went to both of them
+  invitedById            String?
+  inviteRewardedAt       DateTime?
+  // Secret in the private podcast feed's address (Pro); a new one turns the old link off
+  podcastToken           String?   @unique
   // Set when the user closes their account; signing in within 30 days clears it, after that it is erased
-  closedAt          DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  closedAt               DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   oauthAccounts OAuthAccount[]
   refreshTokens RefreshToken[]
@@ -33,8 +50,13 @@ model User {
   usageMonths   UsageMonth[]
   preference    UserPreference?
   folders       Folder[]
+  studioPacks   StudioPackPurchase[]
+  adRewards     AdReward[]
+  invitedBy     User?                @relation("Invites", fields: [invitedById], references: [id], onDelete: SetNull)
+  invitees      User[]               @relation("Invites")
 
   @@index([closedAt])
+  @@index([invitedById])
   @@map("users")
 }
 
@@ -135,55 +157,80 @@ model Folder {
 }
 
 model Document {
-  id                   String         @id @default(uuid())
+  id                   String                @id @default(uuid())
   userId               String
   // Null = loose on the shelf; deleting the folder puts its documents back there
   folderId             String?
   title                String
   author               String?
   kind                 DocumentKind
-  status               DocumentStatus @default(PENDING)
+  status               DocumentStatus        @default(PENDING)
   error                String?
   sourceUrl            String?
   fileKey              String?
   fileName             String?
   mimeType             String?
-  // "en" | "bn" | "mixed"
+  // A language from LANGS ("en", "bn", "hi", …) or "mixed"
   language             String?
+  // Language picked at import ("auto" is null); decides Latin-script text (English vs Spanish…)
+  languageHint         String?
+  // Read citations, links, page numbers and reference lists aloud instead of skipping them
+  keepClutter          Boolean               @default(false)
+  // Set on a translation: the document it was translated from
+  translatedFromId     String?
+  // Set on a daily digest: the day it covers (\"YYYY-MM-DD\", listener's calendar)
+  digestDay            String?
+  // When it was added to the owner's private podcast feed (Pro); null if it isn't in it
+  podcastAddedAt       DateTime?
   excerpt              String?
-  charCount            Int            @default(0)
-  chunkCount           Int            @default(0)
-  estimatedDurationSec Int            @default(0)
-  usedOcr              Boolean        @default(false)
+  charCount            Int                   @default(0)
+  chunkCount           Int                   @default(0)
+  estimatedDurationSec Int                   @default(0)
+  usedOcr              Boolean               @default(false)
   // "Make it expressive" (AI emotion suggestions); null until first run
   autoExpression       AutoExpressionStatus?
-  createdAt            DateTime       @default(now())
-  updatedAt            DateTime       @updatedAt
+  // How the whole document is narrated on Expressive voices: "auto" or a style from
+  // NARRATION_STYLES (suspense, horror, …); null means plain narration
+  narrationStyle       String?
+  // subtle | balanced | dramatic
+  narrationStrength    String?
+  // What "Make it expressive" learned: { style, narrator, characters: [{ name, voice }] }
+  narrationBrief       Json?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
 
-  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  folder    Folder?         @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  chunks    DocumentChunk[]
-  playback  PlaybackState[]
-  bookmarks Bookmark[]
-  export    AudioExport?
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder         Folder?          @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  translatedFrom Document?        @relation("Translations", fields: [translatedFromId], references: [id], onDelete: SetNull)
+  translations   Document[]       @relation("Translations")
+  chunks         DocumentChunk[]
+  playback       PlaybackState[]
+  bookmarks      Bookmark[]
+  export         AudioExport?
+  offline        OfflineDownload?
+  studyAids      StudyAid[]
 
+  @@unique([userId, digestDay])
   @@index([userId, createdAt])
   @@index([userId, folderId])
+  @@index([userId, podcastAddedAt])
   @@map("documents")
 }
 
 // The unit of speech generation: a few sentences in one language.
 model DocumentChunk {
-  id                   String  @id @default(uuid())
+  id                   String @id @default(uuid())
   documentId           String
   index                Int
   text                 String
-  // "en" | "bn"
+  // A language from LANGS
   language             String
   // [{ start, end, paragraphStart }] character offsets of sentences within text
   sentences            Json
   // Emotions and sounds the listener (or AI) added: { emotions: [{ start, end, emotion, ai? }], sounds: [{ at, sound, ai? }] }
   expressions          Json?
+  // The document's narration direction as voiced ("a tense, hushed storyteller…"); null for plain
+  narration            String?
   estimatedDurationSec Float
 
   document Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -213,14 +260,35 @@ model AudioClip {
   model      String
   // Fingerprint of what was voiced (text, voice, emotions); a change means regenerate
   renderKey  String?
+  // Shared audio file this clip plays; null for clips made before audio was shared
+  blobHash   String?
   error      String?
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
 
   chunk DocumentChunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  blob  AudioBlob?    @relation(fields: [blobHash], references: [hash])
 
   @@unique([chunkId, voiceId])
+  @@index([blobHash])
   @@map("audio_clips")
+}
+
+// One generated audio file, shared by every clip with exactly the same speech
+// (same text, voice, emotions and encoding), whoever's document it's in. Files
+// no clip uses any more are removed by a daily job.
+model AudioBlob {
+  hash       String   @id
+  storageKey String
+  mimeType   String
+  durationMs Int
+  model      String
+  sizeBytes  Int
+  createdAt  DateTime @default(now())
+
+  clips AudioClip[]
+
+  @@map("audio_blobs")
 }
 
 enum ExportStatus {
@@ -231,26 +299,66 @@ enum ExportStatus {
 
 // The whole document as one MP3 (a Plus feature), rebuilt only when the audio would differ
 model AudioExport {
-  id          String       @id @default(uuid())
-  documentId  String       @unique
-  status      ExportStatus @default(RUNNING)
+  id         String       @id @default(uuid())
+  documentId String       @unique
+  status     ExportStatus @default(RUNNING)
   // Fingerprint of every chunk's render key; a different key means the MP3 is stale
-  renderKey   String
-  voiceId     String?
+  renderKey  String
+  voiceId    String?
   // The latest job; older jobs still running are ignored when they finish
-  jobId       String?
-  chunksDone  Int          @default(0)
-  chunkCount  Int
-  storageKey  String?
-  sizeBytes   Int?
-  durationMs  Int?
-  error       String?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  jobId      String?
+  chunksDone Int          @default(0)
+  chunkCount Int
+  storageKey String?
+  sizeBytes  Int?
+  durationMs Int?
+  error      String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
 
   document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@map("audio_exports")
+}
+
+// A summary or quiz made from a document (Plus), kept until the text changes
+model StudyAid {
+  id         String   @id @default(uuid())
+  documentId String
+  // "summary" | "quiz"
+  kind       String
+  // Fingerprint of the document text it was made from
+  sourceKey  String
+  content    Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, kind])
+  @@map("study_aids")
+}
+
+// A document's audio voiced in full for offline listening (Plus and up). The app
+// downloads the clips once this is READY.
+model OfflineDownload {
+  id         String       @id @default(uuid())
+  documentId String       @unique
+  status     ExportStatus @default(RUNNING)
+  // Fingerprint of every chunk's voice and render key; a different key means re-download
+  renderKey  String
+  voiceId    String?
+  // The latest job; older jobs still running are ignored when they finish
+  jobId      String?
+  chunksDone Int          @default(0)
+  chunkCount Int
+  error      String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("offline_downloads")
 }
 
 model PlaybackState {
@@ -301,12 +409,19 @@ model ListeningDay {
   @@map("listening_days")
 }
 
-// Characters sent to speech providers per user per month ("YYYY-MM")
+// Speech generated per user per month ("YYYY-MM"). Allowances count seconds of
+// newly made audio per voice level; characters are kept for history.
 model UsageMonth {
-  id         String @id @default(uuid())
-  userId     String
-  period     String
-  characters Int    @default(0)
+  id              String @id @default(uuid())
+  userId          String
+  period          String
+  characters      Int    @default(0)
+  naturalSec      Int    @default(0)
+  expressiveSec   Int    @default(0)
+  // Characters translated with "Translate" this month
+  translatedChars Int    @default(0)
+  // Extra Natural seconds earned this month by watching rewarded ads (Free)
+  bonusNaturalSec Int    @default(0)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -314,10 +429,60 @@ model UsageMonth {
   @@map("usage_months")
 }
 
+// A Studio pack (extra Expressive minutes) bought through Google Play; the id is
+// RevenueCat's transaction id, so each purchase is credited once
+model StudioPackPurchase {
+  id        String   @id
+  userId    String
+  productId String
+  seconds   Int
+  isSandbox Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("studio_pack_purchases")
+}
+
+// Estimated speech spend per UTC day ("YYYY-MM-DD"), split by free/paid users
+// and model; the daily spending caps read this
+// A rewarded ad watched for extra Natural minutes; caps them per day
+model AdReward {
+  id            String   @id @default(uuid())
+  userId        String
+  // UTC day, "YYYY-MM-DD"
+  day           String
+  // AdMob's id for the reward when it was verified server-side, so a callback counts once
+  transactionId String?  @unique
+  seconds       Int
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, day])
+  @@map("ad_rewards")
+}
+
+model SpendDay {
+  id         String @id @default(uuid())
+  day        String
+  // "free" | "paid"
+  bucket     String
+  model      String
+  seconds    Int    @default(0)
+  characters Int    @default(0)
+  // Millionths of a US dollar
+  costMicros Int    @default(0)
+
+  @@unique([day, bucket, model])
+  @@map("spend_days")
+}
+
 model UserPreference {
   userId           String   @id
-  voiceEnId        String?
-  voiceBnId        String?
+  // Preferred voice per language: { "en": "ivy", "bn": "nusrat", … }
+  voices           Json     @default("{}")
   speed            Float    @default(1)
   dailyGoalMinutes Int      @default(30)
   // Start the next unfinished shelf item when one finishes

@@ -14,7 +14,7 @@ import type { DocumentSummary } from '@/features/library/types';
 import { formatMinutes } from '@/features/player/hooks/use-player';
 import { usePlayerStore } from '@/features/player/store/player.store';
 import { useUsage } from '@/features/voices/hooks/use-voices';
-import { getErrorMessage } from '@/lib/api/api-error';
+import { getErrorMessage, hasErrorCode } from '@/lib/api/api-error';
 import { haptics } from '@/lib/haptics';
 import { useTokens } from '@/lib/use-tokens';
 
@@ -43,6 +43,8 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
   const [starting, setStarting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Out of minutes: offer the plans next to the message
+  const [outOfMinutes, setOutOfMinutes] = useState(false);
   const [folder, setFolder] = useState(savedFolderName);
 
   if (premium === null || (premium && !status.data)) return <Spinner color={t.accent} className="my-6 self-center" />;
@@ -64,11 +66,13 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
   const start = async () => {
     setStarting(true);
     setError(null);
+    setOutOfMinutes(false);
     try {
       client.setQueryData(key, await exportsApi.start(document.id, voiceId));
       void client.invalidateQueries({ queryKey: ['usage'] });
     } catch (e) {
       setError(getErrorMessage(e));
+      setOutOfMinutes(hasErrorCode(e, 'USAGE_LIMIT_REACHED'));
     } finally {
       setStarting(false);
     }
@@ -132,7 +136,10 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
           ? 'The audio has changed since the last MP3 (voice or emotions). Make a fresh one to include the changes.'
           : 'The whole recording as one MP3. Parts you haven’t listened to yet are voiced first and count towards this month’s listening.'}
       </Text>
-      <InlineAlert message={error ?? (exp.status === 'FAILED' ? exp.error : null)} />
+      <InlineAlert
+        message={error ?? (exp.status === 'FAILED' ? exp.error : null)}
+        action={outOfMinutes ? <PrimaryButton label="See plans" size="md" variant="secondary" onPress={() => router.push('/plans')} /> : undefined}
+      />
       <PrimaryButton label={exp.status === 'FAILED' ? 'Try again' : 'Prepare MP3'} isLoading={starting} onPress={() => void start()} />
     </View>
   );

@@ -10,7 +10,13 @@ export interface Range {
  * the range are trimmed around it; leftovers that are only spaces or
  * punctuation are dropped.
  */
-export function setEmotion(text: string, e: ChunkExpressions, range: Range, emotion: EmotionId | null): ChunkExpressions {
+export function setEmotion(
+  text: string,
+  e: ChunkExpressions,
+  range: Range,
+  emotion: EmotionId | null,
+  options: { strong?: boolean; direction?: string } = {},
+): ChunkExpressions {
   const emotions: EmotionMark[] = [];
   const keep = (m: EmotionMark) => /[\p{L}\p{N}]/u.test(text.slice(m.start, m.end)) && emotions.push(m);
   for (const m of e.emotions) {
@@ -21,7 +27,9 @@ export function setEmotion(text: string, e: ChunkExpressions, range: Range, emot
     if (m.start < range.start) keep({ ...m, end: range.start });
     if (m.end > range.end) keep({ ...m, start: range.end });
   }
-  if (emotion) emotions.push({ start: range.start, end: range.end, emotion });
+  if (emotion) {
+    emotions.push({ start: range.start, end: range.end, emotion, ...(options.strong && { strong: true }), ...(options.direction && { direction: options.direction }) });
+  }
   return { ...e, emotions: emotions.sort((a, b) => a.start - b.start) };
 }
 
@@ -31,6 +39,9 @@ export function setSound(e: ChunkExpressions, at: number, sound: SoundId | null)
   if (sound) sounds.push({ at, sound });
   return { ...e, sounds: sounds.sort((a, b) => a.at - b.at) };
 }
+
+/** The mark covering all of a range, if one does */
+export const markOf = (e: ChunkExpressions, range: Range) => e.emotions.find((m) => m.start <= range.start && m.end >= range.end) ?? null;
 
 /** The emotion covering all of a range, if one does */
 export const emotionOf = (e: ChunkExpressions, range: Range) =>

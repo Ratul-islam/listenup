@@ -2,6 +2,7 @@ import { File, UploadType } from 'expo-file-system';
 
 import { ApiError } from '@/lib/api/api-error';
 import { api } from '@/lib/api/client';
+import type { Lang } from '@/lib/languages';
 
 import type { Category, DocumentList, DocumentSummary, ReaderData, SortOrder } from '../types';
 
@@ -19,6 +20,9 @@ export interface PickedFile {
   name: string;
   mimeType?: string | null;
 }
+
+/** Language picked at import; "auto" lets the server detect it */
+export type ImportLanguage = Lang | 'auto';
 
 export const documentsApi = {
   /** `folder`: "root" for loose items, a folder id for its contents; omit to search everything */
@@ -40,22 +44,26 @@ export const documentsApi = {
    * JS memory, and the API's 4.5 MB body limit on Vercel doesn't apply), then
    * the API is told it's there and starts reading it.
    */
-  upload: async (file: PickedFile) => {
+  upload: async (file: PickedFile, language: ImportLanguage = 'auto') => {
     const source = new File(file.uri);
     const { data: ticket } = await api.post<UploadTicket>('/documents/uploads', { fileName: file.name, size: source.size }, { auth: true });
     const sent = await source.upload(ticket.url, { httpMethod: 'PUT', uploadType: UploadType.BINARY_CONTENT, headers: ticket.headers });
     if (sent.status < 200 || sent.status >= 300) {
       throw new ApiError("The upload didn't go through. Check your connection and try again.", sent.status, 'UPLOAD_FAILED');
     }
-    const { data } = await api.post<{ document: DocumentSummary }>(`/documents/uploads/${ticket.uploadId}/complete`, { fileName: file.name }, { auth: true });
+    const { data } = await api.post<{ document: DocumentSummary }>(
+      `/documents/uploads/${ticket.uploadId}/complete`,
+      { fileName: file.name, language },
+      { auth: true },
+    );
     return data.document;
   },
 
-  fromText: (body: { title?: string; text: string }) =>
+  fromText: (body: { title?: string; text: string; language?: ImportLanguage }) =>
     api.post<{ document: DocumentSummary }>('/documents/text', body, { auth: true }).then((r) => r.data.document),
 
-  fromUrl: (url: string) =>
-    api.post<{ document: DocumentSummary }>('/documents/url', { url }, { auth: true }).then((r) => r.data.document),
+  fromUrl: (url: string, language: ImportLanguage = 'auto') =>
+    api.post<{ document: DocumentSummary }>('/documents/url', { url, language }, { auth: true }).then((r) => r.data.document),
 
   rename: (id: string, title: string) =>
     api.patch<{ document: DocumentSummary }>(`/documents/${id}`, { title }, { auth: true }).then((r) => r.data.document),
@@ -64,8 +72,13 @@ export const documentsApi = {
   move: (id: string, folderId: string | null) =>
     api.patch<{ document: DocumentSummary }>(`/documents/${id}`, { folderId }, { auth: true }).then((r) => r.data.document),
 
-  reprocess: (id: string, ocr: boolean) =>
-    api.post<{ document: DocumentSummary }>(`/documents/${id}/reprocess`, { ocr }, { auth: true }).then((r) => r.data.document),
+  /** Reads the document again: with OCR, and/or changing whether citations and links are read */
+  reprocess: (id: string, ocr: boolean, keepClutter?: boolean) =>
+    api.post<{ document: DocumentSummary }>(`/documents/${id}/reprocess`, { ocr, keepClutter }, { auth: true }).then((r) => r.data.document),
+
+  /** A translated copy, which appears on the shelf when it's ready */
+  translate: (id: string, language: Lang) =>
+    api.post<{ document: DocumentSummary }>(`/documents/${id}/translations`, { language }, { auth: true }).then((r) => r.data.document),
 
   remove: (id: string) => api.delete<null>(`/documents/${id}`, { auth: true }),
 

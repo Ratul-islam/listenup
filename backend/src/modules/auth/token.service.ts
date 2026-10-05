@@ -19,6 +19,10 @@ export interface AuthTokens {
   refreshTokenExpiresAt: Date
 }
 
+// A token replaced this recently is forgiven once more (see inReuseGrace), as Auth0's
+// "reuse interval" does; later reuse still ends the session
+const REFRESH_REUSE_GRACE_MS = 30_000
+
 const invalidRefreshToken = () =>
   new AppError('Invalid or expired refresh token', 401, 'INVALID_REFRESH_TOKEN')
 const reusedRefreshToken = () =>
@@ -60,6 +64,18 @@ export class TokenService {
     }
   }
 
+  /**
+   * A token rotated moments ago, in a session that's still live: the app most
+   * likely never got (or never saved) the new one, because it was closed or
+   * lost its connection mid-refresh, or two refreshes crossed. It gets a fresh
+   * token in the same session instead of being treated as stolen.
+   */
+  private async inReuseGrace(token: { revokedAt: Date | null; replacedById: string | null; familyId: string }) {
+    if (!token.revokedAt || !token.replacedById) return false
+    if (Date.now() - token.revokedAt.getTime() > REFRESH_REUSE_GRACE_MS) return false
+    return this.authRepository.familyIsLive(token.familyId)
+  }
+
   async rotate(refreshToken: string, ctx: ClientContext) {
     let payload: RefreshTokenPayload
     try {
@@ -74,6 +90,7 @@ export class TokenService {
     if (stored.revokedAt) {
       // Rotated tokens have a successor; plain revoked ones (logout) don't
       if (stored.replacedById) {
+        if (await this.inReuseGrace(stored)) return { user: stored.user, tokens: await this.issue(stored.user, ctx, { familyId: stored.familyId }) }
         await this.authRepository.revokeRefreshTokenFamily(stored.familyId)
         throw reusedRefreshToken()
       }
@@ -83,7 +100,10 @@ export class TokenService {
 
     const nextId = randomUUID()
     if (!(await this.authRepository.markRefreshTokenRotated(stored.id, nextId))) {
-      // Another request rotated this exact token at the same moment
+      // Another request rotated this exact token at the same moment: the app's own
+      // parallel refreshes, unless it happened outside the grace window
+      const latest = await this.authRepository.findRefreshTokenById(stored.id)
+      if (latest && (await this.inReuseGrace(latest))) return { user: stored.user, tokens: await this.issue(stored.user, ctx, { familyId: stored.familyId }) }
       await this.authRepository.revokeRefreshTokenFamily(stored.familyId)
       throw reusedRefreshToken()
     }

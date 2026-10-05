@@ -1,10 +1,7 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { prisma } from '../../config/db.js'
-import { createTtsProvider } from '../tts/providers/provider-factory.js'
-import { TtsRepository } from '../tts/tts.repository.js'
-import { TtsService } from '../tts/tts.service.js'
-import { UsageRepository } from '../usage/usage.repository.js'
-import { UsageService } from '../usage/usage.service.js'
+import { createInvitesService } from '../invites/invites.factory.js'
+import { createTtsService } from '../tts/tts.factory.js'
 import { VoicesRepository } from '../voices/voices.repository.js'
 import { VoicesService } from '../voices/voices.service.js'
 import { PlaybackController } from './playback.controller.js'
@@ -17,12 +14,16 @@ import {
   documentParamsSchema,
   progressBodySchema,
   statsQuerySchema,
+  voiceNoteBodySchema,
 } from './playback.schema.js'
 import { PlaybackService } from './playback.service.js'
 
 const playbackRoutes: FastifyPluginAsyncZod = async (app) => {
-  const tts = new TtsService(new TtsRepository(prisma), new UsageService(new UsageRepository(prisma)), createTtsProvider())
-  const service = new PlaybackService(new PlaybackRepository(prisma), new VoicesService(new VoicesRepository(prisma)), tts)
+  const tts = createTtsService()
+  const invites = createInvitesService()
+  const service = new PlaybackService(new PlaybackRepository(prisma), new VoicesService(new VoicesRepository(prisma)), tts, (userId) =>
+    invites.checkReward(userId),
+  )
   const controller = new PlaybackController(service)
 
   app.addHook('preHandler', app.verifyAccess)
@@ -32,6 +33,11 @@ const playbackRoutes: FastifyPluginAsyncZod = async (app) => {
     '/:documentId/chunks/:index/audio',
     { schema: { params: chunkParamsSchema, querystring: audioQuerySchema }, config: { rateLimit: { max: 120, timeWindow: '1 minute' } } },
     controller.audio,
+  )
+  app.post(
+    '/:documentId/voice-notes',
+    { schema: { params: documentParamsSchema, body: voiceNoteBodySchema }, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    controller.voiceNote,
   )
   app.put('/:documentId/progress', { schema: { params: documentParamsSchema, body: progressBodySchema } }, controller.saveProgress)
   app.get('/:documentId/bookmarks', { schema: { params: documentParamsSchema } }, controller.listBookmarks)

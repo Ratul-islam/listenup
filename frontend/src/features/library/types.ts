@@ -1,10 +1,13 @@
-import type { ChunkExpressions } from '@/features/expression/catalog';
+import type { ChunkExpressions, NarrationStrength, NarrationStyleId } from '@/features/expression/catalog';
+import type { VoiceTier } from '@/features/voices/api/voices.api';
+import type { Lang } from '@/lib/languages';
+
+export type { Lang };
 
 export type DocumentKind = 'PDF' | 'DOCX' | 'EPUB' | 'TEXT' | 'MARKDOWN' | 'WEB' | 'IMAGE';
 export type DocumentStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
 export type Category = 'all' | 'books' | 'articles' | 'notes' | 'scans';
 export type SortOrder = 'recent' | 'title' | 'progress';
-export type Lang = 'en' | 'bn';
 export type AutoExpressionStatus = 'RUNNING' | 'DONE' | 'FAILED';
 
 export interface DocumentProgress {
@@ -35,8 +38,22 @@ export interface DocumentSummary {
   chunkCount: number;
   estimatedDurationSec: number;
   usedOcr: boolean;
+  /** Citations, links and reference lists are read aloud instead of skipped */
+  keepClutter: boolean;
+  /** Set on a translation: the document it came from */
+  translatedFromId: string | null;
+  /** In the owner's private podcast feed (Plus and Pro) */
+  inPodcast?: boolean;
   /** "Make it expressive" (AI emotion suggestions); null until first run */
   autoExpression: AutoExpressionStatus | null;
+  /** How the whole document is narrated on HD voices (older servers leave it out) */
+  narration?: {
+    /** "auto", a style, or null for plain narration */
+    style: NarrationStyleId | 'auto' | null;
+    strength: NarrationStrength | null;
+    /** What "Make it expressive" detected, when the style is "auto" */
+    detected: NarrationStyleId | null;
+  };
   createdAt: string;
   updatedAt: string;
   progress: DocumentProgress | null;
@@ -70,6 +87,8 @@ export interface ReaderData {
   voices: Record<Lang, string>;
   /** Whether each language's voice can take emotions */
   expressive: Record<Lang, boolean>;
+  /** Each language's voice level; "phone" voices are voiced on this device */
+  tiers: Record<Lang, VoiceTier>;
   speed: number;
   chunks: ReaderChunk[];
 }
