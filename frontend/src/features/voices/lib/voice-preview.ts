@@ -1,3 +1,4 @@
+import { onDeviceVoice } from '@/features/on-device/on-device-voice';
 import { phoneVoice } from '@/modules/phone-voice';
 
 import { voicesApi, type Voice } from '../api/voices.api';
@@ -16,11 +17,17 @@ const PREVIEW_TEXT: Record<Voice['language'], string> = {
   id: 'Halo, saya siap membacakan artikel, catatan, dan buku Anda kapan saja.',
 };
 
-/** Audio to preview a voice: phone voices are voiced on this device, the rest come from the server */
+/** Audio to preview a voice: phone voices (and Natural ones once downloaded) are voiced on this device, the rest come from the server */
 export function previewUri(voice: Voice) {
-  return voice.tier === 'phone'
-    ? phoneVoice.synthesize(PREVIEW_TEXT[voice.language], voice.language).then((clip) => clip.uri)
-    : voicesApi.preview(voice.id);
+  if (voice.tier === 'phone') return phoneVoice.synthesize(PREVIEW_TEXT[voice.language], voice.language).then((clip) => clip.uri);
+  const speaker = voice.tier === 'natural' ? onDeviceVoice.speakerFor(voice.id) : null;
+  if (speaker) {
+    return onDeviceVoice
+      .synthesize(PREVIEW_TEXT[voice.language], speaker)
+      .then((clip) => clip.uri)
+      .catch(() => voicesApi.preview(voice.id));
+  }
+  return voicesApi.preview(voice.id);
 }
 
 /** The phone has no voice for that language (e.g. Bangla isn't downloaded yet) */

@@ -27,7 +27,7 @@ import {
   type NarrationStyleId,
 } from './expression-catalog.js'
 import type { ExpressionsRepository } from './expressions.repository.js'
-import type { ChunkExpressionsBody, DescribeBody, NarrationBody } from './expressions.schema.js'
+import type { DescribeBody, NarrationBody } from './expressions.schema.js'
 
 // Expressive minutes left are turned into text to direct, with some to spare
 const DIRECT_AHEAD_FACTOR = 1.2
@@ -56,16 +56,6 @@ export class ExpressionsService {
     if (!planAtLeast(await this.plan(userId), 'plus')) throw plusRequired()
   }
 
-  /** Replaces one chunk's marks; its audio regenerates the next time it plays */
-  async setChunk(userId: string, documentId: string, index: number, body: ChunkExpressionsBody) {
-    await this.readyDocument(userId, documentId)
-    const chunk = await this.expressionsRepository.findChunk(documentId, index)
-    if (!chunk) throw new AppError('That part of the document does not exist', 404, 'CHUNK_NOT_FOUND')
-    const expressions = normalizeExpressions(body, chunk.text.length)
-    await this.expressionsRepository.setChunk(chunk.id, expressions)
-    return expressions
-  }
-
   /**
    * "Say it like a scared little child": the listener's words become an
    * emotion and a direction on part of a chunk. Open to every plan; it's one
@@ -78,6 +68,7 @@ export class ExpressionsService {
     if (end > chunk.text.length || !/[\p{L}\p{N}]/u.test(chunk.text.slice(start, end))) {
       throw new AppError('Choose some words to direct', 400, 'EMPTY_SELECTION')
     }
+    if (chunk.locked) throw new AppError('This part is locked. Unlock it to change how it sounds.', 423, 'PART_LOCKED')
     const delivery = await describeDelivery(chunk.text.slice(start, end), description, env.OPENROUTER_TEXT_MODEL)
     const mark: EmotionMark = { start, end, emotion: delivery.emotion, ...(delivery.strong && { strong: true }), ...(delivery.direction && { direction: delivery.direction }) }
     const current = readExpressions(chunk.expressions)
@@ -146,6 +137,8 @@ export class ExpressionsService {
 
     const ahead = await this.expressionsRepository.listChunks(documentId, Math.max(from - 1, 0))
     const before = from > 0 ? (ahead.shift()?.text ?? '') : ''
+    // Locked parts keep how they sound; they still give the AI context
+    const unlocked = new Set((await this.expressionsRepository.listUnlockedChunks(documentId, from)).map((c) => c.id))
     const chunks = []
     let total = 0
     for (const chunk of ahead) {
@@ -160,7 +153,7 @@ export class ExpressionsService {
     if (style === 'auto') await this.expressionsRepository.stampNarration(documentId, this.resolve('auto', strength, brief))
 
     const updates = await autoExpress(chunks, { brief, strength, model, before })
-    await this.expressionsRepository.setChunks(updates)
+    await this.expressionsRepository.setChunks(updates.filter((u) => unlocked.has(u.id)))
     await this.expressionsRepository.setAutoStatus(documentId, 'DONE')
   }
 

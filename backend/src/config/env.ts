@@ -41,6 +41,17 @@ const envSchema = z
     KOKORO_URL: z.preprocess((v) => (v === '' ? undefined : v), z.url().optional()),
     // Requests your Kokoro server may have at once (it voices one at a time); more go to OpenRouter
     KOKORO_MAX_IN_FLIGHT: z.coerce.number().int().positive().default(2),
+    // Google's Gemini API key (aistudio.google.com, on a paid billing account). When set, Expressive
+    // (Gemini) voices are made by Google directly, without OpenRouter's 5.5% fee; OpenRouter stays
+    // the fallback. Empty means "not set"
+    GEMINI_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
+    // Half-price "flex" tier for audio nobody is waiting on (MP3 exports, offline downloads, podcast).
+    // Flex can queue; after GEMINI_FLEX_TIMEOUT_MS the part is made at the standard price instead
+    GEMINI_FLEX: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+    GEMINI_FLEX_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
     // "Make it expressive" on Pro: a stronger model follows characters and subtext better
     OPENROUTER_DIRECTOR_PRO_MODEL: z.string().default('google/gemini-3.8-flash'),
 
@@ -71,6 +82,9 @@ const envSchema = z
     // Android package name, for Google Play links in invites
     ANDROID_PACKAGE: z.string().default('dev.ratul.tts'),
     PORT: z.coerce.number().int().positive().default(8000),
+    // How many proxies in front of the API add an X-Forwarded-For entry (Render and Vercel: 1;
+    // add one if Cloudflare is put in front). Only those entries are trusted for the client's address
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(1),
     // Prisma's connections per process. Supabase's session pooler allows 15 clients
     // in all, shared by every process (Render, local dev, migrations), so keep the sum
     // of DATABASE_POOL_MAX + QUEUE_POOL_MAX across them under 15

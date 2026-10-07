@@ -3,14 +3,18 @@ import { ExportsController } from './exports.controller.js'
 import { createExportsService } from './exports.factory.js'
 import { exportBodySchema, exportParamsSchema } from './exports.schema.js'
 
+// Lives under its document: /documents/:documentId/export and /offline
+export const autoPrefix = '/documents'
+
 const exportsRoutes: FastifyPluginAsyncZod = async (app) => {
   const controller = new ExportsController(createExportsService())
 
   app.addHook('preHandler', app.verifyAccess)
 
-  app.get('/:documentId', { schema: { params: exportParamsSchema, querystring: exportBodySchema } }, controller.status)
+  // The whole recording as one MP3, with SRT and VTT subtitles (Plus and up)
+  app.get('/:documentId/export', { schema: { params: exportParamsSchema, querystring: exportBodySchema } }, controller.status)
   app.post(
-    '/:documentId',
+    '/:documentId/export',
     { schema: { params: exportParamsSchema, body: exportBodySchema }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
     controller.start,
   )

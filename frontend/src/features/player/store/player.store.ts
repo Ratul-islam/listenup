@@ -6,6 +6,9 @@ import { perLanguage } from '@/lib/languages';
 
 export type PlayerStatus = 'idle' | 'loading' | 'ready' | 'error';
 
+/** Where the playing part's audio came from */
+export type AudioSource = 'server' | 'device' | 'phone' | 'download';
+
 /** A one-off message for the listener (shown as a toast), e.g. after switching to the phone voice */
 export interface PlayerNotice {
   message: string;
@@ -13,6 +16,8 @@ export interface PlayerNotice {
   showPlans?: boolean;
   /** Offer a rewarded ad for more Natural minutes instead, when one is ready (Free) */
   offerAd?: boolean;
+  /** Offer downloading Natural voices to the phone, where they're free */
+  offerOnDevice?: boolean;
 }
 
 export interface PlayerState {
@@ -32,6 +37,8 @@ export interface PlayerState {
   tiers: Record<Lang, VoiceTier>;
   /** Voice the listener picked for this document */
   voiceId: string | null;
+  /** Where the current chunk's audio came from, e.g. "device" for Natural voices made on this phone */
+  source: AudioSource | null;
   chunkIndex: number;
   /** Media position inside the current chunk */
   positionMs: number;
@@ -56,6 +63,7 @@ export const initialPlayerState: PlayerState = {
   expressive: perLanguage(() => false),
   tiers: perLanguage(() => 'natural'),
   voiceId: null,
+  source: null,
   chunkIndex: 0,
   positionMs: 0,
   isPlaying: false,

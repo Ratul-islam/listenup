@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { Avatar, Spinner, useToast } from 'heroui-native';
 import { LogOut, UserX } from 'lucide-react-native';
@@ -21,6 +22,7 @@ import { haptics } from '@/lib/haptics';
 import { useTokens } from '@/lib/use-tokens';
 
 import { accountApi } from '../api/account.api';
+import { SettingsSections } from '../components/settings-sections';
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -74,7 +76,7 @@ export default function ProfileScreen() {
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingTop: insets.top + 6, paddingBottom: insets.bottom + 40, paddingHorizontal: 20, gap: 24 }}
       >
-        <ScreenHeader title="Profile" onBack={router.back} />
+        <ScreenHeader title="Profile and settings" onBack={router.back} />
 
         <View className="flex-row items-center gap-4">
           <Avatar size="lg" alt={user.name ?? user.email}>
@@ -86,6 +88,8 @@ export default function ProfileScreen() {
             <Text variant="caption" numberOfLines={1}>{user.email}</Text>
           </View>
         </View>
+
+        <SettingsSections />
 
         <SettingsSection title="Name">
           <View className="flex-row items-center gap-2 p-1.5">
@@ -131,6 +135,8 @@ export default function ProfileScreen() {
         <SettingsSection>
           <SettingsRow icon={<UserX size={19} color={t.danger} />} label="Close account" destructive onPress={() => setClosing(true)} right={<View />} />
         </SettingsSection>
+
+        <Text variant="caption" className="text-center">ListenUp {Constants.expoConfig?.version ?? ''}</Text>
       </KeyboardAwareScrollView>
 
       <ActionSheet visible={closing} onClose={() => !closeBusy && setClosing(false)} title="Close your account?">

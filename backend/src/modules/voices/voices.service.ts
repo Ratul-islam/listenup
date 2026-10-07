@@ -1,6 +1,6 @@
 import { AppError } from '../../utils/AppError.js'
 import { LANGS, type Lang } from '../ingestion/text/language.js'
-import { DEFAULT_VOICE, findVoice, isServerVoice, VOICES, type ServerTier, type VoiceDefinition } from './voice-catalog.js'
+import { DEFAULT_VOICE, deviceVoiceOf, findVoice, isServerVoice, VOICES, type ServerTier, type VoiceDefinition } from './voice-catalog.js'
 import type { VoicesRepository } from './voices.repository.js'
 import type { PreferencesBody } from './voices.schema.js'
 
@@ -23,6 +23,8 @@ export function toPublicVoice(v: VoiceDefinition) {
     gender: v.gender,
     tier: v.tier,
     expressive: v.expressive,
+    /** Kokoro speaker for voicing it on the phone once the on-device package is downloaded */
+    deviceVoice: deviceVoiceOf(v),
   }
 }
 
@@ -70,6 +72,22 @@ export class VoicesService {
     const chosen = findVoice(chosenVoiceId)
     if (chosen?.language === language) return chosen
     return findVoice(prefs.voices[language]) ?? findVoice(DEFAULT_VOICE[language])!
+  }
+
+  /**
+   * A part's voice: its own (a character's voice, or the one it was locked
+   * with) when that voice speaks the part's language, otherwise `fallback`,
+   * the document's voice for the language.
+   */
+  forPart<V extends VoiceDefinition>(part: { voiceId: string | null; language: string }, fallback: V): V | VoiceDefinition {
+    const own = findVoice(part.voiceId)
+    return own?.language === part.language ? own : fallback
+  }
+
+  /** Like forPart(), but never a phone voice (MP3 exports) */
+  forPartServer(part: { voiceId: string | null; language: string }, fallback: VoiceDefinition & { tier: ServerTier }) {
+    const voice = this.forPart(part, fallback)
+    return isServerVoice(voice) ? voice : fallback
   }
 
   /** Like resolve(), but never a phone voice, which only the app can voice (e.g. for MP3 export) */

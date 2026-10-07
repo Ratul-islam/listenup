@@ -35,9 +35,10 @@ export const PLANS: PlanDefinition[] = [
     id: 'free',
     name: 'Free',
     price: null,
+    // 5 Expressive minutes, once: 15 cost more per new user (~$0.29 in 2027) than paying users bring in
     allowances: {
-      standard: { naturalMinutes: 60, expressiveMinutes: 15, expressiveTrial: true },
-      reduced: { naturalMinutes: 60, expressiveMinutes: 15, expressiveTrial: true },
+      standard: { naturalMinutes: 60, expressiveMinutes: 5, expressiveTrial: true },
+      reduced: { naturalMinutes: 60, expressiveMinutes: 5, expressiveTrial: true },
     },
     monthlyTranslateChars: 30_000,
     perks: ['PDFs, articles, photos and notes', 'Try Expressive voices with emotions'],

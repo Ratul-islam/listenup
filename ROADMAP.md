@@ -21,6 +21,7 @@ The full business research, with cost charts and a profit calculator, is on the 
 | + | "Make it expressive" redesign: story styles, an AI director that knows the characters, and four easy ways to add emotions | ✅ Built. Not yet heard on the phone |
 | + | Kokoro on your own server for Natural voices, with OpenRouter as backup | ✅ Built and tested on your PC. Hosting not chosen |
 | + | A new Voices page, the login sign-out fix, real app icons, EAS build profiles | ✅ Built. Release checklist in [RELEASE.md](RELEASE.md) |
+| + | Natural voices on the phone: Kokoro-82M downloaded after install, free and unlimited | ✅ Built 7 Oct. Not yet tried on a phone; the voice package isn't uploaded yet |
 | 7 | Launch kit (store listing, marketing) | ⏸ On hold |
 | — | Statistics and owner dashboard | ⏸ On hold |
 
@@ -60,10 +61,10 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
 
 | | Free | Plus | Pro |
 |---|---|---|---|
-| Target price | $0 | $3.99/mo or $34.99/yr (৳149) | $8.99/mo or $79.99/yr (৳399) |
+| Target price | $0 | $3.99/mo or $39.99/yr (৳149 or ৳1,490) | $8.99/mo or $89.99/yr (৳399 or ৳3,990) |
 | Phone voices | Unlimited | Unlimited | Unlimited |
 | Natural voices | 60 min a month | 40 h a month (reduced: 20 h) | 60 h a month (reduced: 40 h) |
-| Expressive voices | 15 min, once | 90 min a month (reduced: 30) | 4 h a month (reduced: 90 min) |
+| Expressive voices | 5 min, once | 90 min a month (reduced: 30) | 4 h a month (reduced: 90 min) |
 | Translation | 30k characters a month | 1M characters a month | 3M characters a month |
 | MP3 export and offline downloads | — | ✓ | ✓ |
 | Summaries and quizzes | — | ✓ | ✓ |
@@ -124,7 +125,7 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
 - **Voice notes.**
   - Send a sentence or paragraph as an MP3, for example on WhatsApp, with its emotions.
   - On the Free plan it ends with a spoken "Made with ListenUp".
-  - Endpoint: `POST /playback/:documentId/voice-notes`.
+  - Endpoint: `POST /documents/:id/voice-notes`.
 - **Translate and listen.**
   - `POST /documents/:id/translations` creates a translated copy, filled by the `document.translate` job.
   - The copy keeps the original's shelf kind.
@@ -135,7 +136,7 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
 
 ### 6. Offline downloads (Plus and Pro)
 
-- **Backend:** `POST /exports/:documentId/offline` starts the `document.prepare-offline` job. `GET /exports/:documentId/offline` returns the status, and `GET /exports/:documentId/offline/manifest` returns the files.
+- **Backend:** `POST /documents/:id/offline` starts the `document.prepare-offline` job. `GET /documents/:id/offline` returns the status, and `GET /documents/:id/offline/manifest` returns the files.
 - **App:** files are saved under `Paths.document/offline/<docId>/` and play in airplane mode, with the text still in sync.
 - **Resuming:** downloads pick up where they left off on the next launch.
 - **Offline voice changes:** you can change voice while offline.
@@ -143,8 +144,8 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
 
 ### Extras
 
-- **Summary and quiz** (Plus): `GET /study/:documentId/:kind` and `POST /study/:documentId/:kind/refresh`. You get a short summary and 10 questions, saved in the `StudyAid` table. The app's screen is `/study/[id]`.
-- **Daily digest:** `POST /documents/digest`. A cheap text model writes a short spoken briefing on the user's last five items from the past two weeks, in their main language. There's one per day, and it shows as a card on the shelf.
+- **Summary and quiz** (Plus): `GET /documents/:id/study/:kind` and `POST /documents/:id/study/:kind` (a fresh one). You get a short summary and 10 questions, saved in the `StudyAid` table. The app's screen is `/study/[id]`.
+- **Daily digest:** `POST /documents` with `{ from: 'digest', day }`. A cheap text model writes a short spoken briefing on the user's last five items from the past two weeks, in their main language. There's one per day, and it shows as a card on the shelf.
 - **Voice search:** search the library by speaking (`recognizeAsync` in the phone-voice module).
 - **Voice-service resilience** ([`openrouter.provider.ts`](backend/src/modules/tts/providers/openrouter.provider.ts)):
   - Each Kokoro request has a 7-second limit, then retries on the other host, up to 3 tries in all.
@@ -196,7 +197,54 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
   - the database connection limit
   - the private podcast moved to Plus
 
-### Database migrations (all applied to Supabase)
+### Creator studio (7 October)
+
+For creators, the main target. Studio is now the script workspace; the settings it used to hold moved to Profile (the avatar).
+
+- **Scripts of any length:** paste the whole thing (up to 200,000 characters, about 3 hours) or import a Word, text or PDF file. The server splits it into parts, so nothing is cut up by hand. Scripts live in Studio, not on the Soundshelf (`Document.isScript`); any document can move between the two.
+- **Fix one part, voice only that part:** tap a part to change its words, add a part after it, delete it, or record a **new take** (`DocumentChunk.take`). Every part keeps its own cached audio, so only what changed is voiced again. The MP3 sheet shows it: "Only 1 part (0:18) will be voiced. The other 5 of 6 are reused, saving about 1:27." Emotions follow their words into the edited text; the listener's place and bookmarks move with the parts.
+- **Pronunciations:** "Ratul → Rah-tool", for the whole account, whole words in any case, every script and every voice (server voices, Natural voices on the phone, Android's voices). Add from Studio or by tapping a word in a part; "Hear it" plays the spelling. A change re-voices only parts with that word.
+- **Subtitles:** every MP3 export now comes with SRT and VTT files, timed to the pauses found in each part's audio (checked against Kokoro's own word timings: sentence breaks land within about 0.1–0.2 s). Lines are at most 42 characters, two per caption (16 for Japanese and Chinese). No AI cost; silences are kept with the shared audio so a re-export only listens to new parts.
+- **Control over every part** (added later on 7 October):
+  - **Redo one sentence.** That sentence alone is recorded again and spliced into the part's existing audio at the pauses around it (`lib/audio/splice.ts`). Only its seconds are charged, about 2 s in the test instead of the 7 s part. It's recorded on its own, so its tone can differ a little, and the app says so.
+  - **A voice per part** for characters (`DocumentChunk.voiceId`), used by the player, exports, offline downloads and voice notes.
+  - **Pause after a part** (0–10 s), in the player, the MP3 (silent frames) and the subtitles.
+  - **Lock a part.** It keeps its recording: its voice is pinned, its pronunciations are copied, and AI direction, story styles, "remove emotions" and find and replace leave it alone.
+  - **Find and replace** across a script, previewing matches, parts and cost first. A case-insensitive match keeps the capitals ("Hold" → "Brace").
+  - **Honest costs everywhere:** every action that records audio shows its cost first, and each script shows the minutes it has used (`Document.voicedSec`).
+  - **Export extras:** short one-line captions for Reels and Shorts (`.short.srt` and `.short.vtt`), the script as `.txt`, and downloading one part as an MP3. Captions split into even pieces.
+  - **Play from a sentence.**
+- **Studio design, "Lavender pro"** (the user's choice, 7 October):
+  - the light brand kept, with pro pieces added
+  - each script opens on a session card: length as a timecode, the voice, and an arrangement bar where every part is as wide as it is long and filled once voiced
+  - parts are tracks: their start time and their **real waveform** (`AudioBlob.peaks`, measured from the audio), or a dotted lane until voiced
+  - a transport bar plays the script in place, with a live timecode and the playing track lit, next to Export
+  - the export sheet lists the files you'll get by name, and ticks off each part while it works
+- **One API shape:** everything about a document lives under `/documents/:id`:
+
+| Endpoint | Does |
+|---|---|
+| `POST /documents` | Adds anything: `{ from: 'text' \| 'url' \| 'upload' \| 'digest', …, script? }` (replaces `/documents/text`, `/url`, `/uploads/:id/complete`, `/digest`) |
+| `POST /documents/uploads` | Signed upload link (step 1 of a file upload) |
+| `GET /documents?view=shelf\|scripts` | The Soundshelf or Studio's scripts |
+| `GET / PATCH / DELETE /documents/:id` | One document; `PATCH` also takes `script: true/false` |
+| `GET /documents/:id/script` | Parts, voices, which parts are voiced, pronunciations (was `/reader`) |
+| `POST /documents/:id/parts`, `PATCH / DELETE /documents/:id/parts/:index`, `POST …/parts/:index/retake` | Add, edit (text, emotions, own voice, pause after, lock), delete, new take |
+| `POST /documents/:id/parts/:index/sentences/:sentence/retake` | Redo one sentence: only it is recorded again and spliced in |
+| `POST /documents/:id/replace` | Find and replace; a preview of parts and cost unless `apply: true` |
+| `GET /documents/:id/parts/:index/audio` | A part's audio (was `/playback/:id/chunks/:index/audio`) |
+| `POST /documents/:id/parts/:index/direction` | "Say it like…" (was `/expressions/…/describe`) |
+| `PUT /documents/:id/narration`, `POST /documents/:id/expressive`, `DELETE /documents/:id/expressions` | Story style, Make it expressive, remove emotions |
+| `GET / POST /documents/:id/export` | MP3 + SRT + VTT, with what voicing it would cost |
+| `GET / POST /documents/:id/offline`, `GET …/offline/manifest` | Offline downloads |
+| `PUT /documents/:id/progress`, `/bookmarks`, `POST /documents/:id/voice-notes` | Listening |
+| `GET / POST /documents/:id/study/:kind` | Summary and quiz |
+| `GET / POST /pronunciations`, `PATCH / DELETE /pronunciations/:id`, `POST /pronunciations/preview` | Pronunciations |
+| `GET /listening/stats` | Today's listening and streak (was `/playback/stats`) |
+
+The old paths are gone, so the backend and app must be deployed together.
+
+### Database migrations (all applied to Supabase, except the newest)
 
 | Migration | Adds |
 |---|---|
@@ -206,6 +254,7 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
 | `20261004230000_study_digest` | `StudyAid`, `Document.digestDay` |
 | `20261005120000_ads_invites_podcast` | `AdReward`, `UsageMonth.bonusNaturalSec`, invite fields and `podcastToken` on `User`, `Document.podcastAddedAt` |
 | `20261005150000_narration_style` | `Document.narrationStyle`, `narrationStrength`, `narrationBrief`, and `DocumentChunk.narration` |
+| `20261007150000_creator_studio` | **Not applied yet.** `Pronunciation`; on `Document`: `isScript`, `editedAt`, `voicedSec`; on `DocumentChunk`: `take`, `sentenceTakes`, `voiceId`, `pauseAfterMs`, `locked`, `lockedLexicon`; on `AudioClip`: `baseKey`, `sentenceTakes`; on `AudioBlob`: `pauses`, `peaks` |
 
 ---
 
@@ -219,7 +268,9 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
 
 - [ ] **Raise the limit on your OpenRouter API key** (openrouter.ai/settings/keys). It has a $1 limit with $0.09 left, so every HD voice now falls back to the phone voice. The account itself still has $4.80.
 - [ ] **Sign in again on your phone.** Testing signed you out (see "Watch for").
-- [ ] **Choose where Kokoro runs:** one Hetzner CAX21 server for the backend and Kokoro (about €10.49 a month, you manage it), Render (Kokoro as a $25–85 private service), or keep Kokoro on OpenRouter for now.
+- [ ] **Upload the on-device voice package:** `cd backend && pnpm kokoro:upload` (build it first with `tools/kokoro-model/build.py`, see its [README](tools/kokoro-model/README.md)).
+- [ ] **Test Natural voices on the phone** on 2–3 phones, including a budget one: Studio → Natural voices on this phone → Download, then the Voice lab (long-press the intro) for speed by thread count.
+- [ ] **Kokoro on your own server** is now only a backup for phones that can't run it. Keep OpenRouter for now.
 - [ ] **Deploy the new backend to Render** and add the new environment variables (listed below).
 - [ ] **Make a new development build.** Phone voices, sharing and payments add native code:
   ```bash
@@ -257,6 +308,7 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
 | Backend (Render) | `ANDROID_PACKAGE` | `dev.ratul.tts` (used in invite links) |
 | Backend (Render) | `PUBLIC_URL` | Must be the public API address: podcast feed links are built from it |
 | Backend | `OPENROUTER_DIRECTOR_PRO_MODEL` | `google/gemini-3.8-flash` (the default): Pro's "Make it expressive" model |
+| Backend (Render) | `GEMINI_API_KEY` | Google AI Studio key on a billed project. Expressive voices skip OpenRouter's fee; exports, downloads and podcast use half-price flex. `GEMINI_FLEX` (`true`) and `GEMINI_FLEX_TIMEOUT_MS` (`90000`) tune it. |
 | Backend | `KOKORO_URL` | Your Kokoro server, for example `http://kokoro:8880`. Leave it empty to use OpenRouter for Natural voices. |
 | Backend | `KOKORO_MAX_IN_FLIGHT` | `2` (the default): requests your Kokoro server gets at once; the rest go to OpenRouter |
 | Backend | `DATABASE_POOL_MAX`, `QUEUE_POOL_MAX` | `5` and `3` (the defaults). Supabase allows 15 connections in all. |
@@ -274,7 +326,8 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
 
 ### Watch for
 
-- **Kokoro is unreliable on OpenRouter** (5 October 2026). Both of its hosts often time out. Running Kokoro yourself is now built (`KOKORO_URL`); it only needs hosting.
+- **Kokoro is unreliable on OpenRouter** (5 October 2026). Both of its hosts often time out. Phones that run Natural voices themselves (7 October) don't need it.
+- **Budget phones** may be too slow for Natural voices on the phone. They keep using the server.
 - ✅ **Fixed: sign-outs after a refresh is cut off.** A token replaced in the last 30 seconds, in a session that hasn't been ended, now gets a fresh token.
 - **Gemini's safety filter** refuses some violent passages (for example in "The Tell-Tale Heart"), with or without a style. Those parts fall back to the phone voice.
 - **Gemini prices double on 1 January 2027.** The spending caps already account for it. Re-check margins once real usage comes in.
@@ -290,8 +343,9 @@ Ordered by value for effort. None are started.
 
 | Feature | Why | Effort |
 |---|---|---|
-| ✅ ~~Run Kokoro yourself~~ | Built (`KOKORO_URL`), and tested on your PC. **Left:** hosting. It needs 4–8 GB of RAM (1.1 GB English only, 2.7 GB with all languages). It saves money only past about 350–700 hours of Natural audio a month; the real gain is reliability. | Hosting only |
-| **Call Google directly, using Batch/Flex for downloads and exports** | Saves OpenRouter's 5.5% fee, and makes Gemini half price for audio nobody is waiting on. Matters most after the 2027 price doubling. | Medium |
+| ✅ ~~Run Kokoro yourself~~ | Built (`KOKORO_URL`), and tested on your PC. Since 7 October, Natural voices run on the phone, so a server is only a backup for phones that can't. It needs 4–8 GB of RAM. | Hosting only, later |
+| **Smaller app download** | sherpa-onnx brings C and C++ API libraries the app doesn't use (about 5 MB per phone). A small config plugin can leave them out. | Small |
+| ✅ ~~Call Google directly, with flex for downloads and exports~~ | Built 7 October: set `GEMINI_API_KEY`. Expressive voices skip OpenRouter's 5.5% fee; MP3 exports, offline downloads and podcast episodes try Google's half-price flex tier first. OpenRouter stays the fallback. | Key only |
 | **Owner dashboard** | Daily spend, paying users, hours per payer and 30-day retention on one page. Needed for the 60-day review. | Small |
 
 ### Growth
@@ -299,7 +353,7 @@ Ordered by value for effort. None are started.
 | Feature | Why | Effort |
 |---|---|---|
 | **Send to ListenUp by email** | Each user gets their own address to forward newsletters and long emails to, and they land on the shelf. Brings people back daily and feeds the digest. | Medium |
-| **Creator tools** | Bangla subtitle files, Banglish to Bangla, a commercial licence, then a voiceover mode. See the [voiceover research](https://claude.ai/artifact/K7Soi8i3L8uPYaNXiuQsW8). | Small, then Medium |
+| **Creator tools, next** | ✅ Studio, part edits, pronunciations and SRT/VTT subtitles are built (7 October). Left: Banglish to Bangla typing, a commercial-use line in the Terms, no "Made with ListenUp" on paid exports, and burned-in caption styles. See the [voiceover research](https://claude.ai/artifact/K7Soi8i3L8uPYaNXiuQsW8). | Small |
 | **bKash checkout on the web** | Google Play doesn't take bKash or Nagad, so most Bangladeshis can't pay in the app. Needs a trade license. | Medium |
 | **Exam pack** (BCS, university) | Turns quiz questions into flashcards that come back at spaced intervals. Builds on summary and quiz, and gives students a strong reason to pay for Plus. | Medium |
 

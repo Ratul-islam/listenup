@@ -16,7 +16,14 @@ export interface Voice {
   tier: VoiceTier;
   /** Can speak with emotions */
   expressive: boolean;
+  /** Kokoro speaker for voicing it on this phone, once Natural voices are downloaded here */
+  deviceVoice: string | null;
 }
+
+/** The Kokoro package for voicing Natural voices on the phone */
+export type OnDeviceModel =
+  | { available: false }
+  | { available: true; version: number; bytes: number; unpackedBytes: number; sha256: string; speakers: string[]; url: string };
 
 export type VoiceTier = 'phone' | 'natural' | 'expressive';
 
@@ -66,4 +73,5 @@ export const voicesApi = {
   preview: (id: string) =>
     api.get<{ url: string }>(`/voices/${id}/preview`, { auth: true, timeoutMs: 60_000 }).then((r) => r.data.url),
   usage: () => api.get<Usage>('/usage', { auth: true }).then((r) => r.data),
+  onDeviceModel: () => api.get<OnDeviceModel>('/voices/on-device', { auth: true }).then((r) => r.data),
 };

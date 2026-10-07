@@ -12,15 +12,18 @@ import type { ChunkExpressions } from '@/features/expression/catalog';
 import { documentsApi } from '@/features/library/api/documents.api';
 import type { Lang, ReaderChunk, ReaderData } from '@/features/library/types';
 import { offlineFiles } from '@/features/offline/offline-files';
-import { voicesApi } from '@/features/voices/api/voices.api';
+import { DeviceChunk } from '@/features/on-device/device-chunk';
+import { isOnDeviceActive, onDeviceVoice, useOnDeviceStore } from '@/features/on-device/on-device-voice';
+import { voicesApi, type VoiceTier } from '@/features/voices/api/voices.api';
 import { voicesKey } from '@/features/voices/hooks/use-voices';
 import { ApiError, getErrorMessage, hasErrorCode } from '@/lib/api/api-error';
 import { queryClient } from '@/lib/query-client';
 import { noteFinishedDocument } from '@/lib/review-prompt';
+import { setActivePronunciations, speakable } from '@/features/pronunciations/lib/pronounce';
 import { phoneVoice } from '@/modules/phone-voice';
 
 import { playbackApi, type ChunkAudio } from '../api/playback.api';
-import { chunkDuration, globalPosition, initialPlayerState, locate, usePlayerStore } from '../store/player.store';
+import { chunkDuration, globalPosition, initialPlayerState, locate, usePlayerStore, type AudioSource } from '../store/player.store';
 
 const REPORT_EVERY_MS = 15_000;
 const SKIP_MS = 15_000;
@@ -30,17 +33,27 @@ const set = usePlayerStore.setState;
 
 const codeOf = (error: unknown) => (error as { code?: string } | null)?.code ?? null;
 
+/** A chunk's audio and where it came from; Natural voices made on the phone also carry their parts */
+type PlayableAudio = ChunkAudio & { source: AudioSource; device?: DeviceChunk };
+
+const fromServer = (audio: Promise<ChunkAudio>): Promise<PlayableAudio> => audio.then((a) => ({ ...a, source: 'server' }));
+
 /**
  * Streams a document chunk by chunk through a single expo-audio player.
  * The next chunk is requested (so the server generates it) and preloaded
- * while the current one plays, so handoffs are near-seamless. Phone voices
- * are voiced on the device into files and play through the same player.
+ * while the current one plays, so handoffs are near-seamless. Phone voices,
+ * and Natural voices once they're downloaded to the phone, are voiced on the
+ * device into files and play through the same player. Natural voices on the
+ * phone are voiced a few sentences at a time, so a chunk starts playing once
+ * its first part is ready.
  * When the server refuses new audio (minutes used up, daily cap), playback
  * switches that language to the phone voice instead of stopping.
  */
 class AudioEngine {
   private player: AudioPlayer | null = null;
-  private urls = new Map<string, Promise<ChunkAudio>>();
+  private urls = new Map<string, Promise<PlayableAudio>>();
+  /** The chunk playing, when it's voiced on the phone part by part */
+  private device: { index: number; chunk: DeviceChunk; part: number; startMs: number } | null = null;
   private loadToken = 0;
   private listenedMs = 0;
   private lastTick: number | null = null;
@@ -69,39 +82,69 @@ class AudioEngine {
     this.lastTick = status.playing ? now : null;
 
     set({
-      positionMs: Math.round(status.currentTime * 1000),
+      positionMs: Math.round((this.device?.startMs ?? 0) + status.currentTime * 1000),
       isPlaying: status.playing,
       isBuffering: status.isBuffering,
     });
-    if (status.didJustFinish) void this.next();
+    if (!status.didJustFinish) return;
+    if (this.device && this.device.part + 1 < this.device.chunk.parts.length) return void this.nextPart();
+    // The creator's pause after this part, unless the listener moves on meanwhile
+    const pause = get().chunks[get().chunkIndex]?.pauseAfterMs ?? 0;
+    if (!pause) return void this.next();
+    const token = this.loadToken;
+    setTimeout(() => token === this.loadToken && void this.next(), pause);
   };
 
-  private voiceFor(index: number) {
-    const { chunks, voices } = get();
-    return voices[(chunks[index]?.language ?? 'en') as Lang];
+  /**
+   * Who reads a part, and at what level: its own voice (a character) if it has
+   * one, otherwise its language's. Once a language falls back to the phone
+   * voice, every part in it does.
+   */
+  private partVoice(index: number): { voice: string; tier: VoiceTier } {
+    const { chunks, voices, tiers } = get();
+    const chunk = chunks[index];
+    const lang = (chunk?.language ?? 'en') as Lang;
+    if (chunk?.ownVoiceId && chunk.tier && tiers[lang] !== 'phone') return { voice: chunk.ownVoiceId, tier: chunk.tier };
+    return { voice: voices[lang], tier: tiers[lang] };
   }
 
-  /** Audio URL for a chunk; requesting it makes the server (or, for phone voices, the device) voice it */
-  private audioFor(index: number) {
-    const { documentId, voiceId, chunks, tiers } = get();
+  private voiceFor(index: number) {
+    return this.partVoice(index).voice;
+  }
+
+  /** Audio URL for a chunk; requesting it makes the server (or, for phone voices and downloaded Natural voices, the device) voice it */
+  private audioFor(index: number): Promise<PlayableAudio> {
+    const { documentId, voiceId, chunks, speed } = get();
     const chunk = chunks[index];
-    const key = `${documentId}:${index}:${this.voiceFor(index)}`;
+    const { voice, tier } = this.partVoice(index);
+    const key = `${documentId}:${index}:${voice}`;
     let pending = this.urls.get(key);
     if (!pending) {
-      const saved = chunk && tiers[chunk.language] !== 'phone' ? offlineFiles.clipFor(documentId!, index, this.voiceFor(index), chunk.expressions) : null;
+      const saved = chunk && tier !== 'phone' ? offlineFiles.clipFor(documentId!, chunk, voice) : null;
+      const speaker = chunk && tier === 'natural' ? onDeviceVoice.speakerFor(voice, speed) : null;
       pending = saved
-        ? Promise.resolve({ index, voiceId: this.voiceFor(index), language: chunk!.language, durationMs: saved.durationMs, mimeType: 'audio/mpeg', url: saved.uri })
-        : chunk && tiers[chunk.language] === 'phone'
+        ? Promise.resolve<PlayableAudio>({
+            index,
+            voiceId: voice,
+            language: chunk!.language,
+            durationMs: saved.durationMs,
+            mimeType: 'audio/mpeg',
+            url: saved.uri,
+            source: 'download',
+          })
+        : chunk && tier === 'phone'
           ? this.phoneAudio(chunk)
-          : playbackApi.audio(documentId!, index, voiceId ?? undefined);
+          : chunk && speaker
+            ? this.deviceAudio(chunk, voice, speaker)
+            : fromServer(playbackApi.audio(documentId!, index, voiceId ?? undefined));
       pending.catch(() => this.urls.delete(key));
       this.urls.set(key, pending);
     }
     return pending;
   }
 
-  private async phoneAudio(chunk: ReaderChunk): Promise<ChunkAudio> {
-    const clip = await phoneVoice.synthesize(chunk.text, chunk.language);
+  private async phoneAudio(chunk: ReaderChunk): Promise<PlayableAudio> {
+    const clip = await phoneVoice.synthesize(speakable(chunk.text), chunk.language);
     return {
       index: chunk.index,
       voiceId: `phone-${chunk.language}`,
@@ -109,7 +152,89 @@ class AudioEngine {
       durationMs: clip.durationMs,
       mimeType: 'audio/wav',
       url: clip.uri,
+      source: 'phone',
     };
+  }
+
+  /**
+   * A Natural voice made on this phone, free, ready once its first part is.
+   * If the phone can't, the server voices it, and the rest of the session.
+   */
+  private async deviceAudio(chunk: ReaderChunk, voiceId: string, speaker: string): Promise<PlayableAudio> {
+    const documentId = get().documentId;
+    const device = new DeviceChunk(chunk, speaker, (durationMs) => {
+      // The timeline firms up as parts are voiced
+      if (get().documentId !== documentId || this.voiceFor(chunk.index) !== voiceId) return;
+      set((s) => ({ chunks: s.chunks.map((c) => (c.index === chunk.index ? { ...c, durationMs } : c)) }));
+    });
+    device.requestAll();
+    try {
+      const first = await device.clip(0);
+      const audio = { index: chunk.index, voiceId, language: chunk.language, mimeType: 'audio/wav' };
+      return { ...audio, durationMs: device.estimatedMs(), url: first.uri ?? '', source: 'device', device };
+    } catch (error) {
+      if (codeOf(error) === 'CANCELLED') throw error;
+      onDeviceVoice.noteFailure();
+      return fromServer(playbackApi.audio(documentId!, chunk.index, get().voiceId ?? undefined));
+    }
+  }
+
+  /**
+   * Plays part `part` of the phone-voiced chunk, from `offsetMs` into it,
+   * waiting for it to be voiced if needed. Parts with nothing to say are skipped.
+   */
+  private async playDevicePart(token: number, part: number, startMs: number, offsetMs: number, autoplay: boolean) {
+    const current = this.device!;
+    const wanted = () => token === this.loadToken;
+    const player = await this.ensurePlayer();
+    try {
+      for (let i = part, start = startMs, offset = offsetMs; i < current.chunk.parts.length; i++, offset = 0) {
+        const clip = await current.chunk.clip(i, wanted);
+        if (!wanted()) return;
+        if (!clip.uri) {
+          start += clip.durationMs;
+          continue;
+        }
+        this.device = { ...current, part: i, startMs: start };
+        player.replace({ uri: clip.uri });
+        player.setPlaybackRate(get().speed, 'high');
+        if (offset > 0) {
+          await this.waitUntilLoaded(player);
+          if (!wanted()) return;
+          await player.seekTo(offset / 1000);
+        }
+        if (autoplay) player.play();
+        // Have the next part ready to swap in
+        if (i + 1 < current.chunk.parts.length) {
+          current.chunk
+            .clip(i + 1)
+            .then((next) => {
+              if (next.uri) void preload({ uri: next.uri });
+            })
+            .catch(() => {});
+        }
+        return;
+      }
+      // Nothing left to say in this chunk
+      if (wanted()) void this.next();
+    } catch {
+      if (!wanted()) return;
+      // The phone stopped voicing: the server takes this chunk from here
+      onDeviceVoice.noteFailure();
+      this.forget(current.index);
+      this.device = null;
+      void this.loadChunk(current.index, get().positionMs, autoplay);
+    }
+  }
+
+  /** The current part ended: on to the next one in the same chunk */
+  private async nextPart() {
+    const current = this.device!;
+    const token = ++this.loadToken;
+    set({ isBuffering: true });
+    const { durationMs } = await current.chunk.clip(current.part).catch(() => ({ durationMs: 0 }));
+    if (token !== this.loadToken) return;
+    await this.playDevicePart(token, current.part + 1, current.startMs + durationMs, 0, true);
   }
 
   /**
@@ -124,6 +249,8 @@ class AudioEngine {
     if (tier === 'phone') return false;
 
     const outOfMinutes = hasErrorCode(error, 'USAGE_LIMIT_REACHED');
+    // Natural voices could be free on this phone instead
+    const offerOnDevice = outOfMinutes && tier === 'natural' && onDeviceVoice.isSupported && !isOnDeviceActive(useOnDeviceStore.getState());
     set((s) => ({
       voices: { ...s.voices, [lang]: `phone-${lang}` },
       tiers: { ...s.tiers, [lang]: 'phone' },
@@ -134,6 +261,7 @@ class AudioEngine {
           : "ListenUp's voices are busy right now, so it switched to your phone's voice.",
         showPlans: outOfMinutes,
         offerAd: outOfMinutes && tier === 'natural',
+        offerOnDevice,
       },
     }));
     return true;
@@ -142,7 +270,11 @@ class AudioEngine {
   private warmNext(index: number) {
     if (index >= get().chunks.length) return;
     this.audioFor(index)
-      .then((audio) => preload({ uri: audio.url }))
+      .then((audio) => {
+        // Parts dropped by a seek are queued again
+        audio.device?.requestAll();
+        if (audio.url) preload({ uri: audio.url });
+      })
       .catch(() => {});
   }
 
@@ -156,7 +288,32 @@ class AudioEngine {
       if (token !== this.loadToken) return;
 
       // Real duration replaces the estimate so the timeline tightens up
-      set((s) => ({ chunks: s.chunks.map((c) => (c.index === index ? { ...c, durationMs: audio.durationMs } : c)) }));
+      const durationMs = audio.device ? audio.device.estimatedMs() : audio.durationMs;
+      set((s) => ({ source: audio.source, chunks: s.chunks.map((c) => (c.index === index ? { ...c, durationMs } : c)) }));
+
+      this.device = null;
+      if (audio.device) {
+        audio.device.requestAll();
+        const wanted = () => token === this.loadToken;
+        let found: { part: number; startMs: number };
+        try {
+          found = await audio.device.locate(offsetMs, wanted);
+        } catch {
+          if (!wanted()) return;
+          // The phone stopped voicing: the server takes over
+          onDeviceVoice.noteFailure();
+          this.forget(index);
+          return void this.loadChunk(index, offsetMs, autoplay);
+        }
+        if (!wanted()) return;
+        const { part, startMs } = found;
+        this.device = { index, chunk: audio.device, part, startMs };
+        await this.playDevicePart(token, part, startMs, Math.max(offsetMs - startMs, 0), autoplay);
+        if (!wanted()) return;
+        this.updateLockScreen();
+        this.warmNext(index + 1);
+        return;
+      }
 
       player.replace({ uri: audio.url });
       player.setPlaybackRate(get().speed, 'high');
@@ -265,9 +422,14 @@ class AudioEngine {
     if (state.documentId) await this.report();
 
     this.urls.clear();
+    this.device = null;
+    onDeviceVoice.dropQueued();
     set({ ...initialPlayerState, status: 'loading', documentId, speed: state.speed });
+    // Natural voices on the phone: load the model while the document loads
+    if (isOnDeviceActive(useOnDeviceStore.getState())) onDeviceVoice.warmUp();
     try {
       const reader = await this.loadReader(documentId, voiceId);
+      setActivePronunciations(reader.pronunciations);
       const progress = reader.document.progress;
       const restart = !!progress?.completedAt;
       set({
@@ -290,7 +452,7 @@ class AudioEngine {
   /** The document's text and voices, from the server, or from its download when offline */
   private async loadReader(documentId: string, voiceId?: string): Promise<ReaderData> {
     try {
-      return await documentsApi.reader(documentId, voiceId);
+      return await documentsApi.script(documentId, voiceId);
     } catch (error) {
       const saved = offlineFiles.get(documentId);
       if (saved && error instanceof ApiError && error.isNetworkError) return saved.reader;
@@ -319,7 +481,19 @@ class AudioEngine {
   async seek(globalMs: number) {
     const { chunks, chunkIndex, isPlaying } = get();
     const target = locate(chunks, globalMs);
-    if (target.index === chunkIndex && this.player) {
+    const device = this.device;
+    if (device && target.index === chunkIndex && this.player) {
+      // Inside the part playing: just move; otherwise find (and maybe voice) the part
+      const partMs = (this.player.duration || 0) * 1000;
+      if (target.offsetMs >= device.startMs && target.offsetMs < device.startMs + partMs) {
+        set({ positionMs: target.offsetMs, finished: false });
+        await this.player.seekTo((target.offsetMs - device.startMs) / 1000);
+        return;
+      }
+    }
+    // Sentences queued for parts nobody will hear now
+    if (target.index !== chunkIndex) onDeviceVoice.dropQueued();
+    if (!device && target.index === chunkIndex && this.player) {
       set({ positionMs: target.offsetMs, finished: false });
       await this.player.seekTo(target.offsetMs / 1000);
     } else {
@@ -334,6 +508,7 @@ class AudioEngine {
 
   /** Starts a given chunk from its beginning (transcript taps) */
   playChunk(index: number) {
+    if (index !== get().chunkIndex) onDeviceVoice.dropQueued();
     void this.loadChunk(index, 0, true);
   }
 
@@ -348,8 +523,11 @@ class AudioEngine {
     const { documentId, chunkIndex, isPlaying } = get();
     if (!documentId) return;
     this.urls.clear();
+    this.device = null;
+    onDeviceVoice.dropQueued();
     try {
-      const reader = await documentsApi.reader(documentId, voiceId);
+      const reader = await documentsApi.script(documentId, voiceId);
+      setActivePronunciations(reader.pronunciations);
       set({ voiceId, voices: reader.voices, expressive: reader.expressive, tiers: reader.tiers, chunks: reader.chunks });
       await this.loadChunk(chunkIndex, 0, isPlaying);
       void this.report();
@@ -361,7 +539,8 @@ class AudioEngine {
 
   /**
    * No connection: switch voices without the server when this device can still
-   * play the new one, i.e. it's the phone voice or the voice the download used.
+   * play the new one, i.e. it's the phone voice, a Natural voice made on this
+   * phone, or the voice the download used.
    */
   private switchVoiceOffline(voiceId: string, error: unknown) {
     if (!(error instanceof ApiError && error.isNetworkError)) return false;
@@ -369,7 +548,8 @@ class AudioEngine {
     const voices = queryClient.getQueryData<{ voices: { id: string; language: Lang; tier: ReaderData['tiers'][Lang]; expressive: boolean }[] }>(voicesKey)?.voices;
     const voice = voices?.find((v) => v.id === voiceId);
     const downloaded = documentId ? offlineFiles.get(documentId) : null;
-    if (!voice || (voice.tier !== 'phone' && downloaded?.voices[voice.language] !== voiceId)) return false;
+    const playable = voice && (voice.tier === 'phone' || onDeviceVoice.speakerFor(voice.id) || downloaded?.voices[voice.language] === voiceId);
+    if (!voice || !playable) return false;
     set((s) => ({
       voiceId,
       voices: { ...s.voices, [voice.language]: voice.id },
@@ -418,6 +598,7 @@ class AudioEngine {
    */
   applyReader(reader: ReaderData) {
     const { chunkIndex } = get();
+    setActivePronunciations(reader.pronunciations);
     this.forget(chunkIndex + 1, Number.MAX_SAFE_INTEGER);
     set((s) => ({
       document: reader.document,
@@ -427,6 +608,29 @@ class AudioEngine {
         return i === chunkIndex ? { ...c, expressions: fresh.expressions } : fresh;
       }),
     }));
+  }
+
+  /**
+   * Takes in a script edited elsewhere (parts changed, added or removed,
+   * pronunciations, new takes) for the open document. Playback carries on; the
+   * part playing keeps its audio unless it changed, and the rest is fetched again.
+   */
+  async refresh(documentId?: string) {
+    const { documentId: open, voiceId, chunkIndex } = get();
+    if (!open || (documentId && documentId !== open)) return;
+    try {
+      const reader = await documentsApi.script(open, voiceId ?? undefined);
+      if (get().documentId !== open) return;
+      setActivePronunciations(reader.pronunciations);
+      const playing = get().chunks[chunkIndex];
+      const fresh = reader.chunks[chunkIndex];
+      const sound = (c: ReaderChunk) => JSON.stringify([c.text, c.take, c.sentenceTakes, c.ownVoiceId, c.voiceId]);
+      const unchanged = playing && fresh && sound(playing) === sound(fresh);
+      for (const key of [...this.urls.keys()]) if (!unchanged || Number(key.split(':')[1]) !== chunkIndex) this.urls.delete(key);
+      set({ document: reader.document, chunks: reader.chunks, chunkIndex: Math.min(chunkIndex, Math.max(reader.chunks.length - 1, 0)) });
+    } catch {
+      // Picked up the next time the document opens
+    }
   }
 
   setSleepTimer(minutes: number | null) {
@@ -450,6 +654,8 @@ class AudioEngine {
     if (this.reportTimer) clearInterval(this.reportTimer);
     this.reportTimer = null;
     this.urls.clear();
+    this.device = null;
+    onDeviceVoice.dropQueued();
     set({ ...initialPlayerState, speed: get().speed });
   }
 }

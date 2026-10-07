@@ -17,7 +17,7 @@ Prepared 5 October 2026.
 | Server typecheck and production build (`pnpm build`) | ✅ Passes |
 | Server Docker image | ✅ Builds, starts, `/api/v1/health` answers `ok`, the podcast cover is served |
 | Automated server checks | ✅ 137 passed across billing, languages, growth, offline, ads, invites, podcast, emotions and login refresh |
-| Database | ✅ All 6 new migrations applied to Supabase |
+| Database | ⚠️ `20261007150000_creator_studio` (creator studio) is **not applied** yet; the earlier migrations are |
 | App typecheck and lint | ✅ Clean |
 | `expo-doctor` | ✅ 21 of 21 checks |
 | Android release bundle | ✅ Builds (11 MB) |
@@ -74,8 +74,13 @@ The test phone was signed out and the OpenRouter key was out of credit. Do these
   - `FREE_DAILY_SPEND_CAP_USD=2` and `DAILY_SPEND_CAP_USD=25`
   - `ANDROID_PACKAGE=dev.ratul.tts`
   - optionally `KOKORO_URL`
+  - **`GEMINI_API_KEY`** (recommended, it's what makes exports cheap): a key from [Google AI Studio](https://aistudio.google.com/apikey) on a project with billing turned on (the paid tier allows commercial use and doesn't train on your data). Expressive voices then skip OpenRouter's 5.5%, and MP3 exports, offline downloads and podcast episodes use Google's half-price flex tier when it's available. Keep `OPENROUTER_API_KEY` too: it's the fallback, and it runs OCR, translation and the AI director.
+- [ ] **Same region for the API and the database** (load test, 7 Oct: Singapore ↔ Tokyo cut capacity about 10×). See [LOAD-TEST.md](LOAD-TEST.md#4-what-to-do-next-most-important-first).
+- [ ] `DATABASE_POOL_MAX=10`, and watch memory on Render Starter (it peaked at 472 of 512 MB in the load test).
 - [ ] **Health check path:** `/api/v1/health`.
-- [ ] **Kokoro (optional for launch):** if you host your own, run `ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0` with 4–8 GB of RAM and set `KOKORO_URL`. Without it, Natural voices use OpenRouter, which is slower and less reliable but works.
+- [ ] **On-device voice package:** build it with `tools/kokoro-model/build.py` and upload it with `pnpm kokoro:upload` (see [tools/kokoro-model/README.md](tools/kokoro-model/README.md)). Until it's uploaded, the app says Natural voices for the phone aren't ready, and they come from the server.
+- [ ] **Licence check:** sherpa-onnx (on-device voices) includes espeak-ng, which is GPL-3.0.
+- [ ] **Kokoro on a server (optional):** for phones that can't run it. If you host your own, run `ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0` with 4–8 GB of RAM and set `KOKORO_URL`. Without it, those phones use OpenRouter, which is slower and less reliable but works.
 
 ### Play listing and policy
 
@@ -111,7 +116,7 @@ Then in Play Console, promote **Internal → Closed testing**. After 14 days wit
 ## 4. Server deploy order
 
 1. Set the environment variables on Render.
-2. Deploy. Migrations are already applied; for future ones, run `pnpm db:deploy` before deploying.
+2. Run `pnpm db:deploy` (applies `20261007150000_creator_studio`), then deploy. The API paths changed on 7 October, so deploy the backend and ship the new app build together; older app builds can't talk to the new backend.
 3. Check that `https://<api>/api/v1/health` returns `{"status":"ok"}`.
 4. Point RevenueCat's webhook at `https://<api>/api/v1/billing/webhook`.
 

@@ -1,4 +1,5 @@
 import { env } from '../../config/env.js'
+import { ON_DEVICE_MODEL } from '../../config/on-device-voice.js'
 import type { Lang } from '../ingestion/text/language.js'
 
 export type VoiceTier = 'phone' | 'natural' | 'expressive'
@@ -145,6 +146,12 @@ export const DEFAULT_VOICE: Record<Lang, string> = {
 const byId = new Map(VOICES.map((v) => [v.id, v]))
 
 export const findVoice = (id: string | null | undefined) => (id ? byId.get(id) : undefined)
+
+const deviceSpeakers = new Set<string>(ON_DEVICE_MODEL.speakers)
+
+/** The Kokoro speaker the app can voice this voice with on the phone, if it can */
+export const deviceVoiceOf = (voice: VoiceDefinition) =>
+  voice.tier === 'natural' && /kokoro/i.test(voice.model) && deviceSpeakers.has(voice.providerVoice) ? voice.providerVoice : null
 
 /** Voiced on the server (Natural or Expressive), as opposed to the phone's own voice */
 export const isServerVoice = (voice: VoiceDefinition): voice is VoiceDefinition & { tier: ServerTier } => voice.tier !== 'phone'

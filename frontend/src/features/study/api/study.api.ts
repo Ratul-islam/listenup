@@ -28,7 +28,7 @@ interface StudyAid<T> {
 const SLOW = { auth: true, timeoutMs: 120_000 } as const;
 
 export const studyApi = {
-  summary: (documentId: string) => api.get<StudyAid<Summary>>(`/study/${documentId}/summary`, SLOW).then((r) => r.data.content),
-  quiz: (documentId: string) => api.get<StudyAid<Quiz>>(`/study/${documentId}/quiz`, SLOW).then((r) => r.data.content),
-  newQuiz: (documentId: string) => api.post<StudyAid<Quiz>>(`/study/${documentId}/quiz/refresh`, {}, SLOW).then((r) => r.data.content),
+  summary: (documentId: string) => api.get<StudyAid<Summary>>(`/documents/${documentId}/study/summary`, SLOW).then((r) => r.data.content),
+  quiz: (documentId: string) => api.get<StudyAid<Quiz>>(`/documents/${documentId}/study/quiz`, SLOW).then((r) => r.data.content),
+  newQuiz: (documentId: string) => api.post<StudyAid<Quiz>>(`/documents/${documentId}/study/quiz`, {}, SLOW).then((r) => r.data.content),
 };

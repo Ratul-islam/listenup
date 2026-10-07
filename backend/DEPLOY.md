@@ -71,6 +71,10 @@ Same as `.env.example`. For production:
 - `ANDROID_PACKAGE` (default `dev.ratul.tts`): used in invite links to Google Play
 - The private podcast feed builds its links from `PUBLIC_URL`, so set it to the address podcast apps can reach
 - `OPENROUTER_TEXT_MODEL` (default `google/gemini-3.5-flash-lite`) and `OPENROUTER_DIRECTOR_PRO_MODEL` (default `google/gemini-3.8-flash`): text AI. The second is "Make it expressive" on Pro.
+- `TRUST_PROXY_HOPS` (default 1): how many proxies in front of the API add an `X-Forwarded-For` entry. Render and Vercel: 1; add one if you put Cloudflare in front. Only those entries count as the client's address, so rate limits can't be bypassed (see [LOAD-TEST.md](../LOAD-TEST.md)).
+- `DATABASE_POOL_MAX=10` (recommended over the default 5, with `QUEUE_POOL_MAX=3`: 13 of the 15 connections Supabase's session pooler allows). The load test doubled throughput with it.
+- **Keep the API and the database in the same region.** Render Singapore with Supabase Tokyo (about 70 ms apart) cut capacity about 10× in the load test. Use a Supabase project in Singapore (`ap-southeast-1`), or run the API in Tokyo.
+- `GEMINI_API_KEY` (recommended): Google's Gemini API key, from a billed Google AI Studio project. Expressive (Gemini) voices are then made by Google directly, without OpenRouter's 5.5% fee, and background work (MP3 exports, offline downloads, podcast episodes) uses the half-price flex tier first. `GEMINI_FLEX=false` turns flex off; `GEMINI_FLEX_TIMEOUT_MS` (default 90000) is how long a flex request may wait before the part is made at the standard price. OpenRouter stays the fallback whenever Google fails.
 - `KOKORO_URL` (optional): your own Kokoro-FastAPI server for Natural voices, for example `http://kokoro:8880`. If it's empty or down, OpenRouter is used. `KOKORO_MAX_IN_FLIGHT` (default 2) is how many requests it gets at once; the rest go to OpenRouter.
 - Keep the OpenRouter **API key's** spending limit well above $0.50. Gemini voice requests are refused below that, and every HD voice then falls back to the phone voice.
 

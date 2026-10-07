@@ -33,7 +33,7 @@ export const playbackApi = {
   audio: (documentId: string, index: number, voiceId?: string) =>
     api
       .get<ChunkAudio>(
-        `/playback/${documentId}/chunks/${index}/audio${voiceId ? `?voiceId=${encodeURIComponent(voiceId)}` : ''}`,
+        `/documents/${documentId}/parts/${index}/audio${voiceId ? `?voiceId=${encodeURIComponent(voiceId)}` : ''}`,
         { auth: true, timeoutMs: 90_000 },
       )
       .then((r) => r.data),
@@ -41,16 +41,16 @@ export const playbackApi = {
   saveProgress: (
     documentId: string,
     body: { chunkIndex: number; offsetMs: number; voiceId?: string; speed?: number; listenedSec: number; completed?: boolean },
-  ) => api.put<unknown>(`/playback/${documentId}/progress`, { ...body, day: localDay() }, { auth: true }),
+  ) => api.put<unknown>(`/documents/${documentId}/progress`, { ...body, day: localDay() }, { auth: true }),
 
-  stats: () => api.get<ListeningStats>(`/playback/stats?day=${localDay()}`, { auth: true }).then((r) => r.data),
+  stats: () => api.get<ListeningStats>(`/listening/stats?day=${localDay()}`, { auth: true }).then((r) => r.data),
 
   bookmarks: (documentId: string) =>
-    api.get<{ bookmarks: Bookmark[] }>(`/playback/${documentId}/bookmarks`, { auth: true }).then((r) => r.data.bookmarks),
+    api.get<{ bookmarks: Bookmark[] }>(`/documents/${documentId}/bookmarks`, { auth: true }).then((r) => r.data.bookmarks),
 
   addBookmark: (documentId: string, body: { chunkIndex: number; offsetMs: number; label?: string }) =>
-    api.post<{ bookmark: Bookmark }>(`/playback/${documentId}/bookmarks`, body, { auth: true }).then((r) => r.data.bookmark),
+    api.post<{ bookmark: Bookmark }>(`/documents/${documentId}/bookmarks`, body, { auth: true }).then((r) => r.data.bookmark),
 
   removeBookmark: (documentId: string, bookmarkId: string) =>
-    api.delete<null>(`/playback/${documentId}/bookmarks/${bookmarkId}`, { auth: true }),
+    api.delete<null>(`/documents/${documentId}/bookmarks/${bookmarkId}`, { auth: true }),
 };

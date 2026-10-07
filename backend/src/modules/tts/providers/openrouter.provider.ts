@@ -1,9 +1,10 @@
 import { pcmRate, pcmToMp3 } from '../../../lib/audio/encode.js'
 import { normalizeMp3 } from '../../../lib/audio/mp3.js'
 import { env } from '../../../config/env.js'
+import { geminiSpeech, type GeminiTier } from '../../../lib/gemini.js'
 import { createSpeech, type SpeechRequest } from '../../../lib/openrouter.js'
 import { AppError } from '../../../utils/AppError.js'
-import type { SynthesisRequest, SynthesisResult, TtsProvider } from './tts-provider.js'
+import type { SpeechRoute, SynthesisRequest, SynthesisResult, TtsProvider } from './tts-provider.js'
 
 // Models asked for raw PCM, which we encode ourselves at our bitrate (Gemini TTS
 // only returns PCM; Kokoro's own MP3s are larger than ours)
@@ -54,13 +55,57 @@ async function localKokoro(req: SpeechRequest) {
   return { audio, contentType: res.headers.get('content-type') }
 }
 
+// Google directly (GEMINI_API_KEY): after repeated failures, use OpenRouter for a while.
+// A flex request Google refuses outright (not offered for the model) stops flex for an hour.
+const GOOGLE_BREAK_AFTER_FAILURES = 3
+const GOOGLE_BREAK_MS = 60_000
+const GOOGLE_REFUSED_BREAK_MS = 10 * 60_000
+const FLEX_REFUSED_BREAK_MS = 60 * 60_000
+const google = { failuresInRow: 0, pausedUntil: 0, flexPausedUntil: 0 }
+
+/**
+ * A Gemini voice made by Google directly, which skips OpenRouter's 5.5% fee. Work
+ * nobody is waiting on tries the half-price flex tier first, then standard.
+ * Returns null when Google can't make it now, so OpenRouter makes it instead.
+ */
+async function fromGoogle({ text, voice, style, background }: SynthesisRequest) {
+  const now = Date.now()
+  if (!env.GEMINI_API_KEY || !/gemini.*tts/i.test(voice.model) || now < google.pausedUntil) return null
+  const tiers: GeminiTier[] = background && env.GEMINI_FLEX && now >= google.flexPausedUntil ? ['flex', 'standard'] : ['standard']
+  for (const tier of tiers) {
+    try {
+      const speech = await geminiSpeech({
+        model: voice.model,
+        text,
+        voice: voice.providerVoice,
+        style,
+        tier,
+        timeoutMs: tier === 'flex' ? env.GEMINI_FLEX_TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
+      })
+      google.failuresInRow = 0
+      return { ...speech, route: (speech.tier === 'flex' ? 'google-flex' : 'google') as SpeechRoute }
+    } catch (e) {
+      const status = e instanceof AppError ? e.statusCode : 0
+      const refused = status >= 400 && status < 500 && status !== 429
+      console.warn(`[tts] Google ${tier} speech failed: ${e instanceof Error ? e.message : e}`)
+      if (tier === 'flex') {
+        if (refused) google.flexPausedUntil = Date.now() + FLEX_REFUSED_BREAK_MS
+        continue
+      }
+      if (refused) google.pausedUntil = Date.now() + GOOGLE_REFUSED_BREAK_MS
+      else if (++google.failuresInRow >= GOOGLE_BREAK_AFTER_FAILURES) google.pausedUntil = Date.now() + GOOGLE_BREAK_MS
+    }
+  }
+  return null
+}
+
 async function speechWithRetries(req: SpeechRequest) {
-  if (!/kokoro/i.test(req.model)) return createSpeech(req, DEFAULT_TIMEOUT_MS)
+  if (!/kokoro/i.test(req.model)) return { ...(await createSpeech(req, DEFAULT_TIMEOUT_MS)), route: 'openrouter' as SpeechRoute }
   // Busy (it voices one request at a time) or recently down: OpenRouter takes this one
   if (localAvailable()) {
     local.inFlight++
     try {
-      return await localKokoro(req)
+      return { ...(await localKokoro(req)), route: 'local' as SpeechRoute }
     } catch (e) {
       local.pausedUntil = Date.now() + LOCAL_BREAK_MS
       console.warn(`[tts] local Kokoro failed, using OpenRouter for ${LOCAL_BREAK_MS / 1000}s: ${e instanceof Error ? e.message : e}`)
@@ -75,7 +120,7 @@ async function speechWithRetries(req: SpeechRequest) {
     try {
       const result = await createSpeech({ ...req, onlyProvider: provider }, timeoutMs)
       kokoro.failuresInRow = 0
-      return result
+      return { ...result, route: 'openrouter' as SpeechRoute }
     } catch (e) {
       if (!retryable(e)) throw e
       last = e
@@ -92,9 +137,16 @@ export class OpenRouterTtsProvider implements TtsProvider {
   readonly name = 'openrouter'
   readonly billable = true
 
-  async synthesize({ text, voice, style }: SynthesisRequest): Promise<SynthesisResult> {
+  async synthesize(req: SynthesisRequest): Promise<SynthesisResult> {
+    const { text, voice, style } = req
+    const direct = await fromGoogle(req)
+    if (direct) {
+      const { audio: mp3, durationMs } = normalizeMp3(pcmToMp3(direct.pcm, direct.sampleRate))
+      return { audio: mp3, durationMs: durationMs || undefined, mimeType: 'audio/mpeg', extension: 'mp3', provider: this.name, model: voice.model, route: direct.route }
+    }
+
     const pcm = PCM_MODELS.test(voice.model)
-    const { audio, contentType } = await speechWithRetries({
+    const { audio, contentType, route } = await speechWithRetries({
       model: voice.model,
       input: text,
       voice: voice.providerVoice,
@@ -105,6 +157,6 @@ export class OpenRouterTtsProvider implements TtsProvider {
     // Store everything as MP3 so clips stay small and play everywhere
     const encoded = pcm || /pcm/i.test(contentType ?? '') ? pcmToMp3(audio, pcmRate(contentType)) : audio
     const { audio: mp3, durationMs } = normalizeMp3(encoded)
-    return { audio: mp3, durationMs: durationMs || undefined, mimeType: 'audio/mpeg', extension: 'mp3', provider: this.name, model: voice.model }
+    return { audio: mp3, durationMs: durationMs || undefined, mimeType: 'audio/mpeg', extension: 'mp3', provider: this.name, model: voice.model, route }
   }
 }

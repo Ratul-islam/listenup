@@ -29,11 +29,11 @@ const voiceQuery = (voiceId?: string) => (voiceId ? `?voiceId=${encodeURICompone
 
 export const offlineApi = {
   status: (documentId: string, voiceId?: string) =>
-    api.get<{ offline: OfflineStatus }>(`/exports/${documentId}/offline${voiceQuery(voiceId)}`, { auth: true }).then((r) => r.data.offline),
+    api.get<{ offline: OfflineStatus }>(`/documents/${documentId}/offline${voiceQuery(voiceId)}`, { auth: true }).then((r) => r.data.offline),
   start: (documentId: string, voiceId?: string) =>
-    api.post<{ offline: OfflineStatus }>(`/exports/${documentId}/offline`, { voiceId }, { auth: true }).then((r) => r.data.offline),
+    api.post<{ offline: OfflineStatus }>(`/documents/${documentId}/offline`, { voiceId }, { auth: true }).then((r) => r.data.offline),
   manifest: (documentId: string, voiceId?: string) =>
-    api.get<Manifest>(`/exports/${documentId}/offline/manifest${voiceQuery(voiceId)}`, { auth: true }).then((r) => r.data),
+    api.get<Manifest>(`/documents/${documentId}/offline/manifest${voiceQuery(voiceId)}`, { auth: true }).then((r) => r.data),
 };
 
 const inFlight = new Map<string, Promise<void>>();
@@ -86,7 +86,7 @@ async function run(document: DocumentSummary) {
   if (status.status === 'FAILED') throw new ApiError(status.error ?? "Couldn't prepare the download.", 500, 'OFFLINE_FAILED');
 
   // 2. The clips and reader data come down to the phone
-  const [reader, manifest] = await Promise.all([documentsApi.reader(document.id, voiceId), offlineApi.manifest(document.id, voiceId)]);
+  const [reader, manifest] = await Promise.all([documentsApi.script(document.id, voiceId), offlineApi.manifest(document.id, voiceId)]);
   const dir = documentDir(document.id);
   if (dir.exists) dir.delete();
   dir.create({ intermediates: true });

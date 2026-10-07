@@ -4,6 +4,7 @@ import * as Sharing from 'expo-sharing';
 import type { ReaderChunk } from '@/features/library/types';
 import type { VoiceTier } from '@/features/voices/api/voices.api';
 import { api } from '@/lib/api/client';
+import { speakable } from '@/features/pronunciations/lib/pronounce';
 import { phoneVoice } from '@/modules/phone-voice';
 
 interface VoiceNoteFile {
@@ -42,13 +43,13 @@ export async function shareVoiceNote(opts: {
   let mimeType: string;
 
   if (tier === 'phone') {
-    const clip = await phoneVoice.synthesize(text.trim(), chunk.language);
+    const clip = await phoneVoice.synthesize(speakable(text.trim()), chunk.language);
     file = new File(noteFolder(), safeName(text, 'wav'));
     new File(clip.uri).copy(file);
     mimeType = 'audio/wav';
   } else {
     const { data } = await api.post<VoiceNoteFile>(
-      `/playback/${documentId}/voice-notes`,
+      `/documents/${documentId}/voice-notes`,
       { chunkIndex: chunk.index, start: range.start, end: range.end, voiceId: voiceId ?? undefined },
       { auth: true, timeoutMs: 60_000 },
     );

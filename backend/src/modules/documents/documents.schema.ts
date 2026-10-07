@@ -8,6 +8,8 @@ const languageField = z.enum(['auto', ...LANGS]).optional()
 export const CATEGORIES = ['all', 'books', 'articles', 'notes', 'scans'] as const
 
 export const listQuerySchema = z.object({
+  /** The Soundshelf (everything but scripts) or Studio's scripts */
+  view: z.enum(['shelf', 'scripts']).default('shelf'),
   category: z.enum(CATEGORIES).default('all'),
   q: z.string().trim().max(200).optional(),
   sort: z.enum(['recent', 'title', 'progress']).default('recent'),
@@ -24,32 +26,50 @@ export const uploadStartSchema = z.object({
   size: z.number().int().positive(),
 })
 
-/** Step 2: the file is in storage */
-export const uploadCompleteSchema = z.object({
-  fileName: z.string().trim().min(1).max(255),
-  language: languageField,
-})
+/** A creator's script goes to Studio instead of the Soundshelf */
+const scriptField = z.boolean().default(false)
 
-export const uploadParamsSchema = z.object({ uploadId: z.uuid() })
-
-export const textBodySchema = z.object({
-  title: z.string().trim().max(200).optional(),
-  text: z.string().trim().min(1, 'Add some text to listen to').max(MAX_PASTE_CHARS),
-  language: languageField,
-})
-
-export const urlBodySchema = z.object({
-  url: z.url('Enter a full link, starting with https://').max(2000),
-  language: languageField,
-})
+/**
+ * One way to add anything: pasted text, a web link, a file already uploaded
+ * (step 2 of an upload), or today's digest.
+ */
+export const createBodySchema = z.discriminatedUnion('from', [
+  z.object({
+    from: z.literal('text'),
+    title: z.string().trim().max(200).optional(),
+    text: z.string().trim().min(1, 'Add some text to listen to').max(MAX_PASTE_CHARS),
+    language: languageField,
+    script: scriptField,
+  }),
+  z.object({
+    from: z.literal('url'),
+    url: z.url('Enter a full link, starting with https://').max(2000),
+    language: languageField,
+    script: scriptField,
+  }),
+  z.object({
+    from: z.literal('upload'),
+    uploadId: z.uuid(),
+    fileName: z.string().trim().min(1).max(255),
+    language: languageField,
+    script: scriptField,
+  }),
+  z.object({
+    from: z.literal('digest'),
+    /** The listener's local date, so "today" follows their calendar */
+    day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+  }),
+])
 
 export const updateBodySchema = z
   .object({
     title: z.string().trim().min(1).max(200).optional(),
     /** Move into a folder, or null to put it back on the shelf */
     folderId: z.uuid().nullable().optional(),
+    /** Move to Studio as a script, or back to the Soundshelf */
+    script: z.boolean().optional(),
   })
-  .refine((v) => v.title !== undefined || v.folderId !== undefined, 'Nothing to update')
+  .refine((v) => v.title !== undefined || v.folderId !== undefined || v.script !== undefined, 'Nothing to update')
 
 export const reprocessBodySchema = z.object({
   ocr: z.boolean().default(false),
@@ -57,26 +77,21 @@ export const reprocessBodySchema = z.object({
   keepClutter: z.boolean().optional(),
 })
 
-export const digestBodySchema = z.object({
-  /** The listener's local date, so "today" follows their calendar */
-  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
-})
-
 export const translateBodySchema = z.object({ language: z.enum(LANGS) })
 
-export const readerQuerySchema = z.object({
+export const scriptQuerySchema = z.object({
   voiceId: z.string().max(64).optional(),
 })
 
 export type ListQuery = z.infer<typeof listQuerySchema>
-export type TextBody = z.infer<typeof textBodySchema>
-export type UrlBody = z.infer<typeof urlBodySchema>
+export type CreateBody = z.infer<typeof createBodySchema>
+export type TextBody = Extract<CreateBody, { from: 'text' }>
+export type UrlBody = Extract<CreateBody, { from: 'url' }>
+export type UploadCompleteBody = Extract<CreateBody, { from: 'upload' }>
+export type DigestBody = Extract<CreateBody, { from: 'digest' }>
 export type UpdateBody = z.infer<typeof updateBodySchema>
 export type ReprocessBody = z.infer<typeof reprocessBodySchema>
 export type IdParams = z.infer<typeof idParamsSchema>
 export type UploadStartBody = z.infer<typeof uploadStartSchema>
-export type UploadCompleteBody = z.infer<typeof uploadCompleteSchema>
-export type UploadParams = z.infer<typeof uploadParamsSchema>
-export type ReaderQuery = z.infer<typeof readerQuerySchema>
+export type ScriptQuery = z.infer<typeof scriptQuerySchema>
 export type TranslateBody = z.infer<typeof translateBodySchema>
-export type DigestBody = z.infer<typeof digestBodySchema>

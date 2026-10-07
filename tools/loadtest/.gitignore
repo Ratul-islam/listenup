@@ -1,0 +1,9 @@
+# Made by a run
+jwt-secret
+load-users.json
+load-state.json
+results.jsonl
+stats.log
+phases.log
+routes-100.json
+*.log

@@ -78,7 +78,12 @@ function toSentences(paragraphs: string[], scripts: ScriptLanguages): Sentence[]
  * Latin-script sentences and Chinese characters take the document's languages
  * for them (`scripts`).
  */
-export function chunkParagraphs(paragraphs: string[], scripts: ScriptLanguages = { latin: 'en', han: 'zh' }): ChunkDraft[] {
+export function chunkParagraphs(
+  paragraphs: string[],
+  scripts: ScriptLanguages = { latin: 'en', han: 'zh' },
+  /** False for text edited into the middle of a document, where a quick start doesn't matter */
+  { shortFirst = true }: { shortFirst?: boolean } = {},
+): ChunkDraft[] {
   const chunks: ChunkDraft[] = []
   let current: Sentence[] = []
 
@@ -99,7 +104,7 @@ export function chunkParagraphs(paragraphs: string[], scripts: ScriptLanguages =
   for (const sentence of toSentences(paragraphs, scripts)) {
     const size = current.reduce((n, s) => n + s.text.length + 1, 0)
     const language = current[0]?.language ?? sentence.language
-    const target = sized(chunks.length === 0 ? FIRST_CHUNK_CHARS : CHUNK_TARGET_CHARS, language)
+    const target = sized(chunks.length === 0 && shortFirst ? FIRST_CHUNK_CHARS : CHUNK_TARGET_CHARS, language)
     const languageChanged = current.length > 0 && current[0].language !== sentence.language
     const wouldOverflow = size + sentence.text.length > sized(CHUNK_MAX_CHARS, language)
     const atParagraph = sentence.paragraphStart && size >= target * 0.6

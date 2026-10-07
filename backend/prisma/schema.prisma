@@ -50,6 +50,7 @@ model User {
   usageMonths   UsageMonth[]
   preference    UserPreference?
   folders       Folder[]
+  pronunciations Pronunciation[]
   studioPacks   StudioPackPurchase[]
   adRewards     AdReward[]
   invitedBy     User?                @relation("Invites", fields: [invitedById], references: [id], onDelete: SetNull)
@@ -180,6 +181,12 @@ model Document {
   translatedFromId     String?
   // Set on a daily digest: the day it covers (\"YYYY-MM-DD\", listener's calendar)
   digestDay            String?
+  // A creator's script: listed in Studio instead of on the Soundshelf
+  isScript             Boolean               @default(false)
+  // When a part's text was last edited in the app; re-reading the source would undo the edits
+  editedAt             DateTime?
+  // Seconds of newly made audio this document has used from its owner's minutes
+  voicedSec            Int                   @default(0)
   // When it was added to the owner's private podcast feed (Pro); null if it isn't in it
   podcastAddedAt       DateTime?
   excerpt              String?
@@ -211,6 +218,7 @@ model Document {
   studyAids      StudyAid[]
 
   @@unique([userId, digestDay])
+  @@index([userId, isScript, createdAt])
   @@index([userId, createdAt])
   @@index([userId, folderId])
   @@index([userId, podcastAddedAt])
@@ -231,6 +239,18 @@ model DocumentChunk {
   expressions          Json?
   // The document's narration direction as voiced ("a tense, hushed storyteller…"); null for plain
   narration            String?
+  // Bumped by "New take": the same text voiced again, as a fresh recording
+  take                 Int                   @default(0)
+  // "Redo this sentence": { "<sentence index>": take }; those sentences are recorded alone and spliced in
+  sentenceTakes        Json?
+  // This part's own voice (a character), instead of the document's voice for its language
+  voiceId              String?
+  // Silence after this part in the MP3, subtitles and player
+  pauseAfterMs         Int                   @default(0)
+  // Locked parts keep their recording: AI direction, narration and new pronunciations leave them alone
+  locked               Boolean               @default(false)
+  // What a locked part keeps: { rules: [{ word, sayAs }], pinnedVoice? }
+  lockedLexicon        Json?
   estimatedDurationSec Float
 
   document Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -262,6 +282,10 @@ model AudioClip {
   renderKey  String?
   // Shared audio file this clip plays; null for clips made before audio was shared
   blobHash   String?
+  // The render key of the whole-part recording underneath any redone sentences
+  baseKey    String?
+  // Which sentence takes this audio already has spliced in: { "<sentence index>": take }
+  sentenceTakes Json?
   error      String?
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
@@ -284,6 +308,10 @@ model AudioBlob {
   durationMs Int
   model      String
   sizeBytes  Int
+  // Silences in the audio, [[startMs, endMs], …]; subtitles snap to them. Null until first needed
+  pauses     Json?
+  // Loudness in 48 even slices (0–100), drawn as the part's waveform in Studio
+  peaks      Json?
   createdAt  DateTime @default(now())
 
   clips AudioClip[]
@@ -477,6 +505,24 @@ model SpendDay {
 
   @@unique([day, bucket, model])
   @@map("spend_days")
+}
+
+// How the listener wants a word said ("Ratul" → "Rah-tool"), applied to every voice
+// and every document of theirs until changed
+model Pronunciation {
+  id        String   @id @default(uuid())
+  userId    String
+  // As written in documents; matched as a whole word, ignoring case
+  word      String
+  // Spelled the way it should sound
+  sayAs     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, word])
+  @@map("pronunciations")
 }
 
 model UserPreference {

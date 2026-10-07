@@ -1,263 +1,171 @@
-import Constants from 'expo-constants';
-import * as Linking from 'expo-linking';
 import { router } from 'expo-router';
-import { Avatar, Switch, useToast } from 'heroui-native';
-import { ChevronRight, FileText, Gift, Languages, Podcast, Shield, ShieldCheck, Star } from 'lucide-react-native';
-import { Alert, Pressable, ScrollView, View } from 'react-native';
+import { Avatar, Spinner } from 'heroui-native';
+import { ChevronRight, Ellipsis, Plus, SpellCheck2, Timer } from 'lucide-react-native';
+import { useState } from 'react';
+import { FlatList, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CloudBackground } from '@/components/ui/cloud-background';
 import { GlassCard } from '@/components/ui/glass-card';
+import { IconTile } from '@/components/ui/icon-tile';
 import { ProgressBar } from '@/components/ui/progress-bar';
-import { ChoiceChips, SettingsRow, SettingsSection } from '@/components/ui/settings';
+import { SettingsRow, SettingsSection } from '@/components/ui/settings';
 import { Text } from '@/components/ui/text';
-import { formatResetDate, formatTimeLeft } from '@/features/account/lib/allowance';
-import { RewardAdRow } from '@/features/ads/components/reward-ad-row';
-import { showAdPrivacyOptions, useAdsSdk } from '@/features/ads/lib/ads-sdk';
+import { formatTimeLeft } from '@/features/account/lib/allowance';
 import { useAuthStore } from '@/features/auth/store/auth.store';
-import { useListeningStats } from '@/features/library/hooks/use-documents';
-import { offlineFiles, useOfflineStore } from '@/features/offline/offline-files';
-import { megabytes } from '@/features/offline/offline-panel';
+import { DocumentActions } from '@/features/library/components/document-actions';
+import type { DocumentSummary } from '@/features/library/types';
 import { usePlayerStore } from '@/features/player/store/player.store';
-import { VoiceAvatar } from '@/features/voices/components/voice-avatar';
-import { useUpdatePreferences, useUsage, useVoices } from '@/features/voices/hooks/use-voices';
+import { usePronunciations } from '@/features/pronunciations/hooks';
+import { useUsage } from '@/features/voices/hooks/use-voices';
 import { initials } from '@/features/voices/voice-catalog';
-import { getErrorMessage } from '@/lib/api/api-error';
-import { LANGUAGE_NAMES, LANGUAGE_NAMES_EN, LANGS, type Lang } from '@/lib/languages';
-import { useThemePreference, type ThemePreference } from '@/lib/theme';
 import { useTokens } from '@/lib/use-tokens';
 
-const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
-const GOALS = [15, 30, 45, 60];
-const THEMES: ThemePreference[] = ['system', 'light', 'dark'];
-const THEME_LABELS: Record<ThemePreference, string> = { system: 'Match phone', light: 'Light', dark: 'Dark' };
-const PACKAGE = Constants.expoConfig?.android?.package ?? 'dev.ratul.tts';
-// Language tiles shown before "All languages"
-const FIRST_LANGUAGES = 5;
+import { useScripts } from '../hooks/use-scripts';
+import { formatClock } from '../lib/time';
 
-/** Opens the app's Play Store listing (the Play app if installed, otherwise the web page) */
-async function openStoreListing() {
-  try {
-    await Linking.openURL(`market://details?id=${PACKAGE}`);
-  } catch {
-    await Linking.openURL(`https://play.google.com/store/apps/details?id=${PACKAGE}`);
-  }
-}
-
+/** Studio: a creator's scripts, turned into voiceovers part by part */
 export default function StudioScreen() {
   const insets = useSafeAreaInsets();
   const t = useTokens();
-  const { toast } = useToast();
   const user = useAuthStore((s) => s.user);
   const hasPlayer = usePlayerStore((s) => !!s.documentId);
-  const { data } = useVoices();
+  const scripts = useScripts();
+  const pronunciations = usePronunciations();
   const usage = useUsage();
-  const stats = useListeningStats();
-  const update = useUpdatePreferences();
-  const [theme, setTheme] = useThemePreference();
-  const adPrivacy = useAdsSdk((s) => s.privacyOptionsRequired);
-  const prefs = data?.preferences;
-
-  const save = (body: Parameters<typeof update.mutate>[0]) =>
-    update.mutate(body, { onError: (e) => toast.show({ variant: 'danger', label: getErrorMessage(e) }) });
-
-  // One tile per language: who reads it; opens the Voices page on that language
-  const voiceTile = (lang: Lang) => {
-    const voice = data?.voices.find((v) => v.id === prefs?.voices[lang]);
-    return (
-      <Pressable
-        key={lang}
-        onPress={() => router.push({ pathname: '/voices', params: { lang } })}
-        accessibilityRole="button"
-        accessibilityLabel={`${LANGUAGE_NAMES_EN[lang]}: ${voice?.name ?? 'loading'}. Change voice`}
-        className="flex-1 gap-3 rounded-3xl bg-surface p-3.5 active:opacity-80"
-        style={{ boxShadow: '0px 2px 12px rgba(80, 99, 184, 0.08)' }}
-      >
-        <View className="flex-row items-center justify-between">
-          <VoiceAvatar name={voice?.name ?? '?'} id={voice?.id} size={40} phone={voice?.tier === 'phone'} />
-          <ChevronRight size={16} color={t.muted} />
-        </View>
-        <View>
-          <Text className="text-[16px] font-bold" numberOfLines={1}>{voice?.name ?? '…'}</Text>
-          <Text variant="caption" numberOfLines={1}>
-            {LANGUAGE_NAMES[lang]}
-            {lang !== 'en' ? ` · ${LANGUAGE_NAMES_EN[lang]}` : ''}
-          </Text>
-        </View>
-      </Pressable>
-    );
-  };
-  const tiles = [...LANGS.slice(0, FIRST_LANGUAGES).map(voiceTile), <AllLanguagesTile key="all" count={LANGS.length} />];
-
-  const downloads = Object.values(useOfflineStore((s) => s.downloads));
-  const downloadsSize = downloads.reduce((n, d) => n + d.sizeBytes, 0);
-  const removeDownloads = () =>
-    Alert.alert('Remove all downloads?', 'They’ll stream again next time you play them.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: () => offlineFiles.removeAll() },
-    ]);
-  const natural = usage.data?.natural;
+  const [actionsFor, setActionsFor] = useState<DocumentSummary | null>(null);
+  const items = scripts.data?.items ?? [];
   const expressive = usage.data?.expressive;
-  const todayMin = Math.floor((stats.data?.todaySec ?? 0) / 60);
-  const streak = stats.data?.streakDays ?? 0;
+  const natural = usage.data?.natural;
 
-  return (
-    <CloudBackground>
-      <ScrollView
-        contentContainerStyle={{ paddingTop: insets.top + 16, paddingBottom: insets.bottom + (hasPlayer ? 190 : 120), paddingHorizontal: 20, gap: 22 }}
-      >
-        <Text variant="h1" accessibilityRole="header">Studio</Text>
-
-        <GlassCard raised onPress={() => router.push('/profile')} accessibilityLabel="Profile" className="flex-row items-center gap-3.5 p-4">
+  const header = (
+    <View className="gap-5 pb-3">
+      <View className="flex-row items-center justify-between" style={{ paddingTop: insets.top + 16 }}>
+        <View className="gap-0.5">
+          <Text variant="caption" className="text-[14px]">Voiceovers from your scripts</Text>
+          <Text variant="h1" accessibilityRole="header">Studio</Text>
+        </View>
+        <Pressable onPress={() => router.push('/profile')} accessibilityRole="button" accessibilityLabel="Profile and settings" hitSlop={6}>
           <Avatar size="md" alt={user?.name ?? user?.email ?? 'Account'}>
             {user?.avatarUrl ? <Avatar.Image source={{ uri: user.avatarUrl }} /> : null}
             <Avatar.Fallback>{initials(user?.name ?? user?.email ?? '?')}</Avatar.Fallback>
           </Avatar>
-          <View className="flex-1">
-            <Text className="text-[17px] font-semibold" numberOfLines={1}>{user?.name ?? 'Your account'}</Text>
-            <Text variant="caption" numberOfLines={1}>{user?.email}</Text>
-          </View>
-          <ChevronRight size={18} color={t.muted} />
-        </GlassCard>
+        </Pressable>
+      </View>
 
-        <SettingsSection title="Your listening">
-          <View className="gap-3 p-3">
-            <View className="flex-row items-baseline justify-between">
-              <Text className="text-[16px] font-semibold">{todayMin} of {prefs?.dailyGoalMinutes ?? 30} minutes today</Text>
-              {streak > 1 ? <Text variant="caption">{streak} days in a row</Text> : null}
-            </View>
-            <ProgressBar value={stats.data?.goalFraction ?? 0} />
-          </View>
-        </SettingsSection>
-
-        <SettingsSection title="Plan">
-          <View className="gap-3 p-3">
-            <View className="flex-row items-baseline justify-between">
-              <Text className="text-[16px] font-semibold">{usage.data?.plan.name ?? 'Free'} plan</Text>
-              {usage.data?.plan.expiresAt ? (
-                <Text variant="caption">
-                  {usage.data.plan.renews ? 'Renews' : 'Ends'} {formatResetDate(usage.data.plan.expiresAt.slice(0, 10))}
-                </Text>
-              ) : null}
-            </View>
-            <View className="gap-1.5">
-              <View className="flex-row items-baseline justify-between">
-                <Text className="text-[15px]">Natural voices</Text>
-                <Text variant="caption">{natural ? `${formatTimeLeft(natural.remainingSec)} left` : '…'}</Text>
-              </View>
-              <ProgressBar value={natural ? natural.usedSec / Math.max(natural.limitSec, 1) : 0} />
-            </View>
-            <View className="gap-1.5">
-              <View className="flex-row items-baseline justify-between">
-                <Text className="text-[15px]">{expressive?.trial ? 'Expressive voices (free trial)' : 'Expressive voices'}</Text>
-                <Text variant="caption">{expressive ? `${formatTimeLeft(expressive.remainingSec)} left` : '…'}</Text>
-              </View>
-              <ProgressBar value={expressive ? expressive.usedSec / Math.max(expressive.limitSec, 1) : 0} />
-              {expressive?.bonusSec ? <Text variant="caption">Includes {formatTimeLeft(expressive.bonusSec)} from Studio packs and invites</Text> : null}
-            </View>
-            <Text variant="caption">
-              {usage.data ? `Monthly minutes reset on ${formatResetDate(usage.data.resetsOn)}. ` : ''}Audio you&apos;ve already heard replays for free.
-            </Text>
-          </View>
-          <RewardAdRow />
-          <SettingsRow label="See plans" onPress={() => router.push('/plans')} />
-        </SettingsSection>
-
-        <SettingsSection title="Share and listen anywhere">
-          <SettingsRow
-            icon={<Gift size={19} color={t.foreground} />}
-            label="Invite friends"
-            detail="You both get 10 Expressive minutes"
-            onPress={() => router.push('/invite')}
-          />
-          <SettingsRow
-            icon={<Podcast size={19} color={t.foreground} />}
-            label="Private podcast"
-            detail="Plus · Your documents in any podcast app"
-            onPress={() => router.push('/podcast')}
-          />
-        </SettingsSection>
-
-        <View className="gap-2.5">
-          <View className="flex-row items-baseline justify-between px-1">
-            <Text variant="label" className="text-muted">Voices</Text>
-            <Text variant="caption">Who reads each language</Text>
-          </View>
-          {Array.from({ length: Math.ceil(tiles.length / 2) }, (_, row) => (
-            <View key={row} className="flex-row gap-2.5">
-              {tiles.slice(row * 2, row * 2 + 2)}
-            </View>
-          ))}
+      <GlassCard raised onPress={() => router.push('/script/new')} accessibilityLabel="New script" className="flex-row items-center gap-3.5 p-4">
+        <IconTile size={48}>
+          <Plus size={22} color={t.accent} />
+        </IconTile>
+        <View className="flex-1 gap-0.5">
+          <Text className="text-[17px] font-semibold">New script</Text>
+          <Text variant="caption">Paste it all, however long. It’s split into parts for you.</Text>
         </View>
+      </GlassCard>
 
-        {downloads.length ? (
-          <SettingsSection title="Downloads">
-            <SettingsRow
-              label="Saved for offline"
-              value={`${downloads.length === 1 ? '1 item' : `${downloads.length} items`}, ${megabytes(downloadsSize)}`}
-            />
-            <SettingsRow label="Remove all downloads" destructive onPress={removeDownloads} />
-          </SettingsSection>
-        ) : null}
+      <GlassCard onPress={() => router.push('/plans')} accessibilityLabel="Studio time left. See plans" className="gap-3 p-4">
+        <View className="flex-row items-center gap-2">
+          <Timer size={17} color={t.accent} />
+          <Text className="flex-1 text-[15px] font-semibold">Studio time</Text>
+          <ChevronRight size={16} color={t.muted} />
+        </View>
+        <Meter label={expressive?.trial ? 'Expressive (trial)' : 'Expressive'} used={expressive?.usedSec} limit={expressive?.limitSec} left={expressive?.remainingSec} />
+        <Meter label="Natural" used={natural?.usedSec} limit={natural?.limitSec} left={natural?.remainingSec} />
+        <Text variant="caption">Audio already voiced replays and re-exports for free.</Text>
+      </GlassCard>
 
-        <SettingsSection title="Playback">
-          <Text className="px-3 pt-3 text-[16px] font-medium">Speed</Text>
-          <ChoiceChips options={SPEEDS} value={prefs?.speed} format={(v) => `${v}×`} onChange={(speed) => save({ speed })} />
-          <Text className="px-3 pt-1 text-[16px] font-medium">Daily goal</Text>
-          <ChoiceChips options={GOALS} value={prefs?.dailyGoalMinutes} format={(v) => `${v} min`} onChange={(dailyGoalMinutes) => save({ dailyGoalMinutes })} />
-          <SettingsRow
-            label="Play next automatically"
-            detail="When something finishes, the next unfinished item in the same place starts."
-            right={
-              <Switch
-                isSelected={prefs?.autoPlayNext ?? true}
-                onSelectedChange={(autoPlayNext) => save({ autoPlayNext })}
-                accessibilityLabel="Play next automatically"
-              />
-            }
-          />
-        </SettingsSection>
+      <SettingsSection>
+        <SettingsRow
+          icon={<SpellCheck2 size={19} color={t.foreground} />}
+          label="Pronunciations"
+          detail="Names and words the voices should say your way"
+          value={pronunciations.data?.length ? String(pronunciations.data.length) : undefined}
+          onPress={() => router.push('/pronunciations')}
+        />
+      </SettingsSection>
 
-        <SettingsSection title="Appearance">
-          <ChoiceChips options={THEMES} value={theme} format={(v) => THEME_LABELS[v]} onChange={setTheme} />
-        </SettingsSection>
+      {items.length ? <Text variant="label" className="px-1 pt-1 text-muted">Your scripts</Text> : null}
+    </View>
+  );
 
-        <SettingsSection title="About">
-          <SettingsRow icon={<Star size={19} color={t.foreground} />} label="Rate ListenUp on Google Play" onPress={() => void openStoreListing()} />
-          <SettingsRow icon={<FileText size={19} color={t.foreground} />} label="Terms of service" onPress={() => router.push('/legal/terms')} />
-          <SettingsRow icon={<Shield size={19} color={t.foreground} />} label="Privacy policy" onPress={() => router.push('/legal/privacy')} />
-          {adPrivacy ? (
-            <SettingsRow
-              icon={<ShieldCheck size={19} color={t.foreground} />}
-              label="Ad privacy choices"
-              onPress={() => void showAdPrivacyOptions().catch((e) => toast.show({ variant: 'danger', label: getErrorMessage(e) }))}
-            />
-          ) : null}
-        </SettingsSection>
-
-        <Text variant="caption" className="text-center">ListenUp {Constants.expoConfig?.version ?? ''}</Text>
-      </ScrollView>
-
+  return (
+    <CloudBackground>
+      <FlatList
+        data={items}
+        keyExtractor={(d) => d.id}
+        contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + (hasPlayer ? 190 : 120), gap: 10 }}
+        ListHeaderComponent={header}
+        renderItem={({ item }) => <ScriptRow script={item} onMore={setActionsFor} />}
+        ListEmptyComponent={
+          scripts.isPending ? (
+            <Spinner color={t.accent} className="my-8 self-center" />
+          ) : (
+            <View className="items-center gap-2 px-6 pt-8">
+              <Text className="text-center text-[16px] font-semibold">No scripts yet</Text>
+              <Text variant="caption" className="text-center">
+                Fix one line later and only that line is voiced again. The rest of your recording is reused, so retakes cost almost nothing.
+              </Text>
+            </View>
+          )
+        }
+      />
+      <DocumentActions document={actionsFor} onClose={() => setActionsFor(null)} />
     </CloudBackground>
   );
 }
 
-/** The last tile: every language on the Voices page */
-function AllLanguagesTile({ count }: { count: number }) {
+/** A script as a session: its length as a timecode, its parts, when it was last worked on */
+function ScriptRow({ script, onMore }: { script: DocumentSummary; onMore: (d: DocumentSummary) => void }) {
   const t = useTokens();
+  const preparing = script.status === 'PENDING' || script.status === 'PROCESSING';
+  const failed = script.status === 'FAILED';
+  const detail = preparing
+    ? 'Splitting into parts…'
+    : failed
+      ? (script.error ?? 'Couldn’t read this script')
+      : `${script.chunkCount === 1 ? '1 part' : `${script.chunkCount} parts`}, ${sinceLabel(script.editedAt ?? script.updatedAt)}`;
   return (
-    <Pressable
-      onPress={() => router.push('/voices')}
-      accessibilityRole="button"
-      className="flex-1 justify-between gap-3 rounded-3xl border border-dashed border-border p-3.5 active:opacity-70"
+    <GlassCard
+      onPress={() => (script.status === 'READY' ? router.push({ pathname: '/script/[id]', params: { id: script.id } }) : onMore(script))}
+      accessibilityLabel={`${script.title}, ${formatClock(script.estimatedDurationSec)} long, ${detail}`}
+      className="flex-row items-center gap-3.5 p-4"
     >
-      <View className="size-10 items-center justify-center rounded-full bg-accent-soft-bg">
-        <Languages size={19} color={t.accent} />
+      <View className="h-12 w-[68px] items-center justify-center rounded-2xl bg-accent-soft-bg">
+        {preparing ? (
+          <Spinner size="sm" color={t.accent} />
+        ) : (
+          <Text className="text-[15px] font-bold text-accent-soft-fg" style={{ fontVariant: ['tabular-nums'] }}>{formatClock(script.estimatedDurationSec)}</Text>
+        )}
       </View>
-      <View>
-        <Text className="text-[16px] font-bold text-accent">All languages</Text>
-        <Text variant="caption">{count} languages, every voice</Text>
+      <View className="flex-1 gap-0.5">
+        <Text className="text-[16px] font-semibold" numberOfLines={1}>{script.title}</Text>
+        <Text variant="caption" numberOfLines={1} className={failed ? 'text-danger' : undefined}>{detail}</Text>
       </View>
-    </Pressable>
+      <Pressable onPress={() => onMore(script)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`More for ${script.title}`} className="size-9 items-center justify-center rounded-full active:bg-default">
+        <Ellipsis size={18} color={t.muted} />
+      </Pressable>
+    </GlassCard>
+  );
+}
+
+/** "edited just now", "edited 3 h ago", "edited 2 Oct" */
+function sinceLabel(iso: string) {
+  const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (minutes < 2) return 'edited just now';
+  if (minutes < 60) return `edited ${minutes} min ago`;
+  if (minutes < 24 * 60) return `edited ${Math.floor(minutes / 60)} h ago`;
+  return `edited ${new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`;
+}
+
+/** Minutes left of one voice level, as a slim meter */
+function Meter({ label, used, limit, left }: { label: string; used?: number; limit?: number; left?: number }) {
+  return (
+    <View className="gap-1.5">
+      <View className="flex-row items-baseline justify-between">
+        <Text className="text-[14px]">{label}</Text>
+        <Text variant="caption" style={{ fontVariant: ['tabular-nums'] }}>{left != null ? `${formatTimeLeft(left)} left` : '…'}</Text>
+      </View>
+      <ProgressBar value={used != null && limit ? 1 - Math.min(used / limit, 1) : 0} />
+    </View>
   );
 }

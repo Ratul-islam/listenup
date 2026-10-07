@@ -1,7 +1,8 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import { create } from 'zustand';
 
-import type { ReaderData } from '@/features/library/types';
+import type { ReaderChunk, ReaderData } from '@/features/library/types';
+import { pronounce, speakable } from '@/features/pronunciations/lib/pronounce';
 import type { Lang } from '@/lib/languages';
 
 /** What's saved for one downloaded document, next to its clips */
@@ -108,12 +109,16 @@ export const offlineFiles = {
   },
 
   /** The downloaded file for a chunk, if it still matches what would play (same voice and emotions) */
-  clipFor(documentId: string, index: number, voiceId: string, expressions: unknown) {
+  /** The downloaded audio for a part, if it still says exactly what the part says now */
+  clipFor(documentId: string, chunk: ReaderChunk, voiceId: string) {
     const manifest = useOfflineStore.getState().downloads[documentId];
-    const clip = manifest?.clips.find((c) => c.index === index && c.voiceId === voiceId);
+    const clip = manifest?.clips.find((c) => c.index === chunk.index && c.voiceId === voiceId);
     if (!manifest || !clip) return null;
-    const saved = manifest.reader.chunks[index]?.expressions;
-    if (JSON.stringify(saved) !== JSON.stringify(expressions)) return null;
+    const saved = manifest.reader.chunks.find((c) => c.index === chunk.index);
+    if (!saved || saved.text !== chunk.text || (saved.take ?? 0) !== (chunk.take ?? 0)) return null;
+    if (JSON.stringify(saved.expressions) !== JSON.stringify(chunk.expressions)) return null;
+    // A pronunciation added or changed since the download changes how this part sounds
+    if (pronounce(saved.text, manifest.reader.pronunciations ?? []) !== speakable(chunk.text)) return null;
     const file = new File(documentDir(documentId), clip.file);
     return file.exists ? { uri: file.uri, durationMs: clip.durationMs } : null;
   },

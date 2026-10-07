@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useToast } from 'heroui-native';
-import { BookOpenCheck, Check, CloudDownload, Download, Folder, FolderInput, FolderPlus, Languages, Library, ListX, Pencil, Podcast, RefreshCw, ScanText, Trash2, X } from 'lucide-react-native';
+import { BookOpenCheck, Check, CloudDownload, Download, Folder, FolderInput, FolderPlus, Languages, Library, ListX, Pencil, PenLine, Podcast, RefreshCw, ScanText, Trash2, X } from 'lucide-react-native';
 import { useState } from 'react';
 import { ScrollView, TextInput, View } from 'react-native';
 
@@ -19,15 +19,18 @@ import { getErrorMessage, hasErrorCode } from '@/lib/api/api-error';
 import { LANGS, LANGUAGE_NAMES, type Lang } from '@/lib/languages';
 import { useTokens } from '@/lib/use-tokens';
 
-import { useDeleteDocument, useRenameDocument, useReprocessDocument, useTranslateDocument } from '../hooks/use-documents';
+import { documentsApi } from '../api/documents.api';
+import { useDeleteDocument, useInvalidateDocuments, useRenameDocument, useReprocessDocument, useTranslateDocument } from '../hooks/use-documents';
 import type { DocumentSummary } from '../types';
 
 interface DocumentActionsProps {
   document: DocumentSummary | null;
   onClose: () => void;
+  /** After it's deleted (e.g. leave its script screen) */
+  onDeleted?: () => void;
 }
 
-export function DocumentActions({ document, onClose }: DocumentActionsProps) {
+export function DocumentActions({ document, onClose, onDeleted }: DocumentActionsProps) {
   const t = useTokens();
   const { toast } = useToast();
   const [mode, setMode] = useState<'menu' | 'rename' | 'move' | 'new-folder' | 'export' | 'offline' | 'translate' | 'podcast' | 'delete'>('menu');
@@ -42,6 +45,7 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
   const createFolder = useCreateFolder();
   const addToPodcast = useAddToPodcast();
   const removeFromPodcast = useRemoveFromPodcast();
+  const invalidate = useInvalidateDocuments();
 
   const close = () => {
     setMode('menu');
@@ -100,6 +104,28 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
     close();
   };
 
+  // Between the Soundshelf and Studio
+  const moveScript = async (script: boolean) => {
+    if (!document) return;
+    try {
+      await documentsApi.setScript(document.id, script);
+      await invalidate();
+      toast.show({
+        label: script ? 'Moved to Studio' : 'Moved to your Soundshelf',
+        ...(script && {
+          actionLabel: 'Open',
+          onActionPress: ({ hide }: { hide: (ids?: string | string[] | 'all') => void }) => {
+            hide('all');
+            router.push({ pathname: '/script/[id]', params: { id: document.id } });
+          },
+        }),
+      });
+      close();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   if (!document) return null;
   const canOcr = (document.kind === 'PDF' || document.kind === 'IMAGE') && !document.translatedFromId;
   const busy = document.status === 'PENDING' || document.status === 'PROCESSING';
@@ -116,7 +142,7 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
             : mode === 'new-folder'
               ? 'New folder'
               : mode === 'export'
-                ? 'Download MP3'
+                ? 'MP3 and subtitles'
                 : mode === 'translate'
                   ? 'Translate into'
                   : mode === 'offline'
@@ -126,7 +152,33 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
                       : document.title
       }
     >
-      {mode === 'menu' ? (
+      {mode === 'menu' && document.isScript ? (
+        <>
+          {document.status === 'FAILED' ? (
+            <Text variant="body" className="mb-1 text-muted">{document.error ?? "We couldn't read this file. Check it opens on your phone and try again."}</Text>
+          ) : null}
+          <SheetAction
+            icon={<Pencil size={18} color={t.foreground} />}
+            label="Rename"
+            onPress={() => {
+              setTitle(document.title);
+              setMode('rename');
+            }}
+          />
+          {document.status === 'READY' ? (
+            <SheetAction icon={<Download size={18} color={t.foreground} />} label="Download MP3 and subtitles" onPress={() => setMode('export')} />
+          ) : null}
+          <SheetAction
+            icon={<Library size={18} color={t.foreground} />}
+            label="Move to Soundshelf"
+            detail="Keep it with the things you listen to"
+            onPress={() => void moveScript(false)}
+          />
+          <SheetAction icon={<Trash2 size={18} color={t.danger} />} label="Delete" destructive onPress={() => setMode('delete')} />
+        </>
+      ) : null}
+
+      {mode === 'menu' && !document.isScript ? (
         <>
           {document.status === 'FAILED' ? (
             <Text variant="body" className="mb-1 text-muted">{document.error ?? "We couldn't read this file. Check it opens on your phone and try again."}</Text>
@@ -148,7 +200,15 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
             />
           ) : null}
           {document.status === 'READY' ? (
-            <SheetAction icon={<Download size={18} color={t.foreground} />} label="Download MP3" onPress={() => setMode('export')} />
+            <SheetAction icon={<Download size={18} color={t.foreground} />} label="Download MP3 and subtitles" onPress={() => setMode('export')} />
+          ) : null}
+          {document.status === 'READY' ? (
+            <SheetAction
+              icon={<PenLine size={18} color={t.foreground} />}
+              label="Move to Studio"
+              detail="Edit it as a voiceover script"
+              onPress={() => void moveScript(true)}
+            />
           ) : null}
           {document.status === 'READY' ? (
             <SheetAction
@@ -182,7 +242,13 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
             <SheetAction
               icon={<ListX size={18} color={t.foreground} />}
               label={document.keepClutter ? 'Skip citations and links' : 'Read citations and links too'}
-              detail={document.keepClutter ? 'Also page numbers and reference lists' : 'Reads the document again with everything in it'}
+              detail={
+                document.editedAt
+                  ? 'Reads the original again, which undoes your edits'
+                  : document.keepClutter
+                    ? 'Also page numbers and reference lists'
+                    : 'Reads the document again with everything in it'
+              }
               disabled={busy}
               onPress={() =>
                 reprocess.mutate(
@@ -196,7 +262,7 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
             <SheetAction
               icon={<ScanText size={18} color={t.foreground} />}
               label="Read again with OCR"
-              detail="For scans, or Bangla text that sounds wrong"
+              detail={document.editedAt ? 'Reads the original again, which undoes your edits' : 'For scans, or Bangla text that sounds wrong'}
               disabled={busy}
               onPress={() =>
                 reprocess.mutate(
@@ -320,6 +386,7 @@ export function DocumentActions({ document, onClose }: DocumentActionsProps) {
                   offlineFiles.remove(document.id);
                   toast.show({ label: 'Deleted' });
                   close();
+                  onDeleted?.();
                 },
               })
             }

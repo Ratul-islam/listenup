@@ -8,12 +8,12 @@ export class FolderPickCancelled extends Error {}
 
 const baseName = (title: string) => title.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 80) || 'ListenUp audio';
 
-/** "Title.mp3", or "Title (2).mp3" etc. if the folder already has one */
-function freeName(dir: Directory, title: string) {
+/** "Title", or "Title (2)" etc., so none of the files about to be saved replace one already there */
+function freeBase(dir: Directory, title: string, extensions: string[]) {
   const taken = new Set(dir.list().map((entry) => entry.name));
   const base = baseName(title);
-  let name = `${base}.mp3`;
-  for (let n = 2; taken.has(name); n++) name = `${base} (${n}).mp3`;
+  let name = base;
+  for (let n = 2; extensions.some((ext) => taken.has(`${name}.${ext}`)); n++) name = `${base} (${n})`;
   return name;
 }
 
@@ -42,21 +42,31 @@ function savedFolder() {
 
 export const savedFolderName = () => savedFolder()?.name ?? null;
 
+/** A file to save: its link and extension ("mp3", "srt", "vtt") */
+export interface SaveFile {
+  url: string;
+  ext: string;
+}
+
 /**
- * Downloads an MP3 and saves it into the listener's chosen folder, asking for
- * the folder the first time (or when `chooseFolder` is set). The download goes
- * to the cache first and is copied natively, so big files never sit in JS memory.
+ * Downloads files (an MP3, and its subtitles) and saves them side by side
+ * under one name in the listener's chosen folder, asking for the folder the
+ * first time (or when `chooseFolder` is set). Downloads go to the cache first
+ * and are copied natively, so big files never sit in JS memory.
  */
-export async function saveToFolder(url: string, title: string, { chooseFolder = false } = {}) {
+export async function saveToFolder(files: SaveFile[], title: string, { chooseFolder = false } = {}) {
   const dir = (!chooseFolder && savedFolder()) || (await pickFolder());
+  const base = freeBase(dir, title, files.map((f) => f.ext));
 
   // Copying a file into a folder names the copy after the file, so download it under the final name.
   // (Don't pre-create the target and copy with overwrite: Android deletes the target first, then can't write it.)
   const cache = new Directory(Paths.cache, 'exports', String(Date.now()));
   cache.create({ intermediates: true });
   try {
-    const downloaded = await File.downloadFileAsync(url, new File(cache, freeName(dir, title)));
-    await downloaded.copy(dir);
+    for (const file of files) {
+      const downloaded = await File.downloadFileAsync(file.url, new File(cache, `${base}.${file.ext}`));
+      await downloaded.copy(dir);
+    }
   } finally {
     cache.delete();
   }

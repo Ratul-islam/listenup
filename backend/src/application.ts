@@ -14,8 +14,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export async function buildApp() {
-  // Behind a proxy in production (Vercel, Railway…): take the client IP from X-Forwarded-For, so rate limits are per user
-  const app = Fastify({ logger: true, trustProxy: isProduction });
+  // Behind a proxy in production (Render, Vercel…): the client IP is the X-Forwarded-For entry
+  // the host's own proxy added (TRUST_PROXY_HOPS from the right). Entries further left are
+  // whatever the client sent, so trusting them would let anyone dodge every rate limit
+  const app = Fastify({ logger: true, trustProxy: isProduction ? (_address: string, hop: number) => hop < env.TRUST_PROXY_HOPS : false });
 
   // Zod schemas on routes validate request bodies/params/querystrings
   app.setValidatorCompiler(validatorCompiler);

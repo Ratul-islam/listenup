@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient } from '../../generated/prisma/client.js'
+import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
+import type { Pause } from '../../lib/audio/pauses.js'
 
 export class ExportsRepository {
   constructor(private readonly db: PrismaClient) {}
@@ -35,6 +36,20 @@ export class ExportsRepository {
     })
   }
 
+  /** Silences already found in shared audio files (with their waveform), by file */
+  async blobPauses(hashes: string[]) {
+    if (!hashes.length) return new Map<string, Pause[]>()
+    const rows = await this.db.audioBlob.findMany({
+      where: { hash: { in: hashes }, pauses: { not: Prisma.DbNull }, peaks: { not: Prisma.DbNull } },
+      select: { hash: true, pauses: true },
+    })
+    return new Map(rows.map((r) => [r.hash, r.pauses as unknown as Pause[]]))
+  }
+
+  saveAnalysis(hash: string, pauses: Pause[], peaks: number[]) {
+    return this.db.audioBlob.update({ where: { hash }, data: { pauses: pauses as unknown as Prisma.InputJsonValue, peaks } })
+  }
+
   upsertOffline(documentId: string, data: Omit<Prisma.OfflineDownloadUncheckedCreateInput, 'documentId'>) {
     return this.db.offlineDownload.upsert({ where: { documentId }, create: { documentId, ...data }, update: data })
   }
@@ -43,6 +58,17 @@ export class ExportsRepository {
   async updateOfflineForJob(documentId: string, jobId: string, data: Prisma.OfflineDownloadUncheckedUpdateManyInput) {
     const { count } = await this.db.offlineDownload.updateMany({ where: { documentId, jobId }, data })
     return count > 0
+  }
+
+  /** A stalled export (its process died) becomes FAILED, so it can be started again */
+  async markStopped(documentId: string, jobId: string | null, error: string) {
+    await this.db.audioExport.updateMany({ where: { documentId, jobId, status: 'RUNNING' }, data: { status: 'FAILED', error } })
+    return this.db.audioExport.findUnique({ where: { documentId } })
+  }
+
+  async markOfflineStopped(documentId: string, jobId: string | null, error: string) {
+    await this.db.offlineDownload.updateMany({ where: { documentId, jobId, status: 'RUNNING' }, data: { status: 'FAILED', error } })
+    return this.db.offlineDownload.findUnique({ where: { documentId } })
   }
 
   upsert(documentId: string, data: Omit<Prisma.AudioExportUncheckedCreateInput, 'documentId'>) {

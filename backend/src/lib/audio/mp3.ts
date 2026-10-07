@@ -63,6 +63,11 @@ export function audioFrames(input: Buffer) {
   return input.subarray(frames[0].offset, last.offset + last.length)
 }
 
+/** Sample rate of an MP3's first audio frame (null if it has none) */
+export function mp3SampleRate(input: Buffer) {
+  return walkFrames(input).frames[0]?.sampleRate ?? null
+}
+
 /**
  * Measures an MP3 by walking its frames, and drops a leading Xing/Info
  * frame. Some providers write a wrong frame count there, which makes players

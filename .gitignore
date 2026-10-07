@@ -52,3 +52,18 @@ Thumbs.db
 # Personal Claude Code settings (the shared .claude/settings.json is committed)
 **/.claude/settings.local.json
 PHASES.md
+
+# On-device Kokoro package build (tools/kokoro-model/build.py)
+tools/kokoro-model/work/
+tools/kokoro-model/out/
+tools/kokoro-model/.venv/
+
+
+LOAD-TEST.md
+BUSINESS.md
+CHANGES.md
+MARGIN.md
+RELEASE.md
+ROADMAP.md
+backend/BILLING.md
+backend/DEPLOY.md

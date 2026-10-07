@@ -5,55 +5,56 @@ The latest change, the three before it, and what's left to build. Updated with e
 - **Business decisions:** [BUSINESS.md](BUSINESS.md)
 - **Full build status:** [ROADMAP.md](ROADMAP.md)
 
-> **Nothing is committed yet.** Everything since the `docker configuration` commit (`0b6aae7`) is uncommitted on `main`: about 130 changed and new files. All database migrations are applied to Supabase.
+> **Committed up to "Prepare ListenUp v1.0.0 for release"** (`1a2af1f` on `release/v1.0.0`, not pushed). The on-device Natural voices work and the creator studio are not committed yet. **The creator studio needs migration `20261007150000_creator_studio`, which is not applied to Supabase yet.**
 
 ---
 
 ## Latest change
 
-### Ready for release: new Voices page, sign-out fix, icons, build profiles (5 October 2026)
+### Export fixed, Studio redesigned ("Lavender pro"), and a stress and spike test (7 October 2026)
 
-- **A new Voices page** (`/voices`):
-  - **language tabs,** each language in its own script
-  - **voices grouped by level** (Expressive, Natural, On your phone), each with a one-line meaning
-  - **cards** with a colour gradient avatar per voice that turns into a moving waveform while it previews, an outline and check on the chosen voice, and a ▶ button to hear it
-  - **Studio's "Voices"** is now a grid of language tiles that open the page, plus an "All languages" tile
-  - **the player's "Change"** sheet uses the same cards
-- **Login refresh grace period:** a refresh token replaced in the last 30 seconds, in a session that hasn't been ended, gets a fresh token instead of signing the user out. This covers the app being killed mid-refresh, a lost response, and parallel refreshes. Reuse after 30 seconds, or after logout, still ends the session. 7 checks on a test database.
-- **App icons and splash** made from ListenUp's own mark (lavender gradient, white waveform), replacing Expo's placeholders. The old files are backed up in the session scratchpad.
-- **`frontend/eas.json`:**
-  - development
-  - preview (APK for testers)
-  - production (App Bundle, automatic build numbers)
-  - submit to the internal track as a draft
-- **Server fixes:**
-  - an empty `KOKORO_URL` no longer stops the server from starting (found by the Docker smoke test)
-  - local Kokoro now has a busy limit (`KOKORO_MAX_IN_FLIGHT`, default 2) and a 30-second pause after a failure
-- **New [RELEASE.md](RELEASE.md):** what's verified, what you must do before release, the build commands, smoke tests and rollback. [DEPLOY.md](backend/DEPLOY.md) lists the new settings.
-- **Checked:**
-  - Server: typecheck, production build, Docker image (starts, health check, assets served).
-  - App: typecheck, lint, `expo-doctor` (21 of 21), Android bundle. The OpenRouter key isn't in the bundle.
-- **Not checked on the phone:** the Voices page (the phone was signed out).
+- **Load test report: [LOAD-TEST.md](LOAD-TEST.md).** It ran the production image sized like Render Starter (0.5 CPU, 512 MB), with 300 test users and the mock voice, against a throwaway database.
+  - **Capacity:** about 305 requests a second.
+  - **Errors:** none, from 25 to 400 users at once or in a spike from 20 to 500.
+  - **Recovery:** within 5–10 s after the spike.
+  - **The big finding:** the database 70 ms away (Render Singapore ↔ Supabase Tokyo, as deployed) cuts capacity to 12–17 requests a second, and slows every screen by about 0.5 s. **Put them in the same region.**
+- **Fixed during the test:**
+  - the backend crashing on start-up (a pg-boss setting)
+  - the import queue: 300 at once now take **14 s**, not 5 minutes
+  - **every rate limit could be bypassed** with a made-up `X-Forwarded-For`; now only the host's proxy is trusted (`TRUST_PROXY_HOPS`)
+  - responses are gzipped: a 486-part script is **8.6 KB**, not 458 KB
+- **Export fixes:**
+  - An export whose server crashed or restarted stayed "Voicing part 3 of 10…" for up to 3 hours. It's now marked stopped after 5 quiet minutes and can be started again; offline downloads too.
+  - An export whose audio files had gone missing failed on every retry. Missing parts are now made again **at no charge to the user**.
+  - A daily-cap pause is now a final, explained failure.
+  - All tested on the production image with real MP3s.
+- **Studio, "Lavender pro"** (your choice):
+  - The light brand is kept, with a studio feel added.
+  - Each script opens on a session card: its length as a timecode, its voice, and an **arrangement bar** of all its parts.
+  - Parts are **tracks** with their start time and **real waveform**, measured from the audio (`AudioBlob.peaks`). Parts not voiced yet show a dotted lane.
+  - A **transport bar** plays the script in place, with a live timecode, the playing track lit, and Export.
+  - The export sheet lists the files you'll get by name and ticks off each part while it works.
+  - Studio home shows scripts as sessions with their length, and a "Studio time" meter.
+- **Database:** the not-yet-applied migration `20261007150000_creator_studio` now also adds `AudioBlob.peaks`; it applies cleanly to an empty database.
+- **Checked:** backend and app typecheck, app lint, and the tests above. **Not checked:** the new Studio screens on a phone.
 
 ---
 
 ## Previous three changes
 
-### 1. Kokoro-82M on your own machine (5 October 2026)
+### 1. Control over every part: redo one sentence, part voices, pauses, locks, find and replace (7 October 2026)
 
-- **`KOKORO_URL`:** Natural voices are made on your own Kokoro-FastAPI server, with OpenRouter as backup, and count $0 in the spending caps.
-- **On a Ryzen 7 7700:** about 6× faster than real time, and all 20 Natural voices work. It uses 1.1–2.7 GB of RAM.
-- **Hosting:** not chosen yet.
+- "Fix one sentence" records just that sentence and splices it in, charged for that sentence only. Also a voice per part, a pause after a part, locked parts, find and replace with a cost preview, minutes used per script, and short captions, script text and single-part downloads in exports.
 
-### 2. "Make it expressive" redesigned, and easier emotions (5 October 2026)
+### 2. Changes so ListenUp earns money instead of losing it (7 October 2026)
 
-- **Make it expressive:** story styles and strength, an AI story brief, strong and directed marks, and a model by plan.
-- **Adding emotions yourself:** the mood bar, selecting text, paint mode, and "say it in your own words".
-- **Database:** migration `20261005150000_narration_style`, applied.
+- Free Expressive trial 15 → 5 minutes. Expressive voices go to Google directly when `GEMINI_API_KEY` is set (no 5.5% fee), with the half-price flex tier for exports, offline downloads and podcast episodes, and OpenRouter as the fallback. Yearly prices at about 10 months (Plus $39.99 / ৳1,490, Pro $89.99 / ৳3,990).
+- Model at 2027 prices: −$717 → about +$170 a month at 20,000 users; break-even 4.2% → 0.6–1% of users paying.
 
-### 3. Margin and competitor reports (5 October 2026)
+### 3. Creator studio: fix one part, pronunciations, subtitles, long scripts, one API (7 October 2026)
 
-- **Added [MARGIN.md](MARGIN.md) and [COMPETITORS.md](COMPETITORS.md).** No code changed.
+- Studio is the script workspace (settings moved to Profile). Scripts of any length are split into parts; editing, re-taking, adding or deleting a part re-voices only that part, and the MP3 sheet shows what was saved.
+- Pronunciations for the whole account, applied to every voice. SRT and VTT subtitles with every MP3, timed to the audio's pauses. Everything about a document now lives under `/documents/:id`. Migration `20261007150000_creator_studio` is not applied yet.
 
 ---
 
@@ -62,6 +63,33 @@ The latest change, the three before it, and what's left to build. Updated with e
 ### Your steps (I can't do these)
 
 **The full release checklist is in [RELEASE.md](RELEASE.md).** In short:
+
+- **Creator studio:**
+  1. Run `pnpm db:deploy` to apply `20261007150000_creator_studio`, then deploy the backend **together with** a new app build (`npx expo run:android`); the API paths changed.
+  2. On the phone, test:
+     - New script (paste and file import)
+     - editing a part, New take, adding and deleting parts
+     - **Fix one sentence**: listen to whether the spliced sentence blends in, on an Expressive voice and on a Natural one
+     - a character voice on one part, a pause, locking a part
+     - find and replace
+     - Pronunciations with "Hear it" (an Expressive, a Natural and a phone voice)
+     - MP3 with SRT and with short lines in a video editor such as CapCut
+
+- **From the load test (do these before launch):**
+  1. **Put the API and the database in the same region**: a Supabase project in Singapore next to Render, or the API in Tokyo. About 10× more capacity, and every screen about 0.5 s faster.
+  2. Set `DATABASE_POOL_MAX=10` on Render.
+  3. Watch memory on Render Starter (472 of 512 MB at peak); move to Standard when traffic starts.
+  4. Steps to re-run the test are at the end of [LOAD-TEST.md](LOAD-TEST.md).
+- **Making money (7 October changes):**
+  1. Create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey) on a project with billing turned on, and set `GEMINI_API_KEY` on Render. Keep `OPENROUTER_API_KEY` too.
+  2. After the first exports, check the server log for `Google flex speech failed`. If flex is always refused, exports still save the 5.5%.
+  3. In Play Console, use the new yearly prices from [backend/BILLING.md](backend/BILLING.md): Plus $39.99 / ৳1,490, Pro $89.99 / ৳3,990.
+
+- **Natural voices on the phone:**
+  1. ✅ The package (v1) is built and in R2. Don't rebuild it; raise `VERSION` for a new one.
+  2. Deploy the backend, then rebuild the development app (`npx expo run:android`), because it adds native code.
+  3. On 2–3 phones, including a budget one: download, then compare speeds in the Voice lab.
+  4. Get a licence check on espeak-ng (GPL-3.0), which sherpa-onnx includes. Or move phonemes to the server and drop espeak-ng from the app (proposed).
 
 0. **Top up or raise the limit on your OpenRouter key** (openrouter.ai/settings/keys). Requests are already being refused for low credit ("requires at least $0.50 in balance for audio"), and Gemini voices will start failing.
 1. **Deploy the new backend to Render** and set the new environment variables, including `DATABASE_POOL_MAX=5` and `QUEUE_POOL_MAX=3` if Render sets pool sizes itself. The list is in [ROADMAP.md](ROADMAP.md#environment-variables); `PUBLIC_URL` must be the public API address. Do this soon: Supabase already has the new schema, and an older backend fails on voice settings.
@@ -91,7 +119,9 @@ The latest change, the three before it, and what's left to build. Updated with e
 
 ### Decisions waiting on you
 
-- **Where Kokoro runs in production:** one Hetzner server with the backend (~€10.49 a month), a Render private service ($25–85), or OpenRouter only for now.
+
+- **Kokoro on a server:** now only a backup for phones that can't run it. You chose OpenRouter for now, and your own server later.
+- **The speed bar for voicing on the phone** (now speed test × playback speed ≤ 0.95). Check it on a budget phone.
 - **Voice cloning for Pro:** build it or drop it.
 - **bKash checkout on the web:** after the creator beta.
 - **Auto-add new documents to the podcast.**
@@ -105,9 +135,8 @@ Ordered by value for effort.
 | Feature | Why | Effort |
 |---|---|---|
 | Margin fixes from [MARGIN.md](MARGIN.md): a lower translation allowance in reduced-price countries, text-AI spending in the daily caps, limits on Make it expressive and OCR for Free | Removes the money-losing cases before the 2027 price doubling | Small |
-| Creator basics: Bangla SRT subtitles, Banglish to Bangla, commercial licence, no tag on paid exports | First step of the creator plan | Small |
-| Run Kokoro on your own server | Ends Natural-voice outages at a fixed $7–25 a month | Medium |
-| Call Google directly, with Batch/Flex for exports and downloads | Saves 5.5%, and half price for audio nobody waits on | Medium |
+| Creator basics left: Banglish to Bangla, commercial licence, no tag on paid exports | Subtitles, part edits and pronunciations are done | Small |
+| Leave sherpa-onnx's unused C/C++ libraries out of the app | About 5 MB smaller per install | Small |
 | Owner dashboard | Needed for the 60-day review | Small |
 | Send to ListenUp by email | A daily habit, and it feeds the digest | Medium |
 | Exam pack (spaced-repetition flashcards) | A reason for students to buy Plus | Medium |

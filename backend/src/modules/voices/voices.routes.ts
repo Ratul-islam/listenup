@@ -13,6 +13,7 @@ const voicesRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.verifyAccess)
 
   app.get('/', controller.list)
+  app.get('/on-device', controller.onDeviceModel)
   app.put('/preferences', { schema: { body: preferencesBodySchema } }, controller.updatePreferences)
   app.get(
     '/:id/preview',

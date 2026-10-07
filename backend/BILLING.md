@@ -13,9 +13,9 @@ Until they're done, the Plans page shows "Available soon".
    | Subscription | Base plan | US price | Bangladesh |
    |---|---|---|---|
    | `plus` | `monthly` | $3.99 | ৳149 |
-   | `plus` | `yearly` | $34.99 | ৳1,299 |
+   | `plus` | `yearly` | $39.99 | ৳1,490 |
    | `pro` | `monthly` | $8.99 | ৳399 |
-   | `pro` | `yearly` | $79.99 | ৳3,499 |
+   | `pro` | `yearly` | $89.99 | ৳3,990 |
 
    Let Play suggest the other countries' prices from the US price, then lower
    India, Pakistan, Indonesia and the other reduced-allowance countries

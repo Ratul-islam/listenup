@@ -9,28 +9,33 @@ import { LANGS } from '@/lib/languages';
 import { audioEngine } from '../engine/audio-engine';
 import { usePlayerStore } from '../store/player.store';
 
-/** "Read by Nova", with a quiet way to switch voices */
+/** "Read by Nova", with a quiet way to switch voices, and a note when the phone itself makes the voice */
 export function VoiceCard() {
   const [open, setOpen] = useState(false);
   const chunkLanguage = usePlayerStore((s) => s.chunks[s.chunkIndex]?.language ?? 'en');
   const voices = usePlayerStore((s) => s.voices);
   const chunks = usePlayerStore((s) => s.chunks);
   const voice = useVoice(voices[chunkLanguage]);
+  // Natural voices made on this phone (free, offline) rather than by the server
+  const onPhone = usePlayerStore((s) => s.source === 'device');
   // Voices for the languages this document actually contains
   const languages = useMemo(() => LANGS.filter((lang) => chunks.some((c) => c.language === lang)), [chunks]);
 
   return (
-    <View className="flex-row items-center justify-center gap-1">
-      <Text variant="caption" className="text-[14px]">Read by</Text>
-      <Pressable
-        onPress={() => setOpen(true)}
-        accessibilityRole="button"
-        accessibilityLabel={`Voice: ${voice?.name ?? 'loading'}. Change voice`}
-        className="flex-row items-center gap-1 rounded-full px-2 py-1.5 active:bg-default"
-      >
-        <Text className="text-[14px] font-semibold">{voice?.name ?? '…'}</Text>
-        <Text className="text-[14px] font-medium text-accent">Change</Text>
-      </Pressable>
+    <View className="items-center">
+      <View className="flex-row items-center justify-center gap-1">
+        <Text variant="caption" className="text-[14px]">Read by</Text>
+        <Pressable
+          onPress={() => setOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel={`Voice: ${voice?.name ?? 'loading'}. Change voice`}
+          className="flex-row items-center gap-1 rounded-full px-2 py-1.5 active:bg-default"
+        >
+          <Text className="text-[14px] font-semibold">{voice?.name ?? '…'}</Text>
+          <Text className="text-[14px] font-medium text-accent">Change</Text>
+        </Pressable>
+      </View>
+      {onPhone ? <Text variant="caption">Made on this phone, free</Text> : null}
 
       <VoicePickerSheet
         visible={open}

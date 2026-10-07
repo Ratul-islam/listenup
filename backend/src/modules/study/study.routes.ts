@@ -7,12 +7,16 @@ import { StudyService } from './study.service.js'
 
 const studyLimit = { rateLimit: { max: 15, timeWindow: '1 minute' } }
 
+// Lives under its document: /documents/:documentId/study/summary and /quiz
+export const autoPrefix = '/documents'
+
 const studyRoutes: FastifyPluginAsyncZod = async (app) => {
   const controller = new StudyController(new StudyService(new StudyRepository(prisma)))
   app.addHook('preHandler', app.verifyAccess)
 
-  app.get('/:documentId/:kind', { schema: { params: studyParamsSchema }, config: studyLimit }, controller.get)
-  app.post('/:documentId/:kind/refresh', { schema: { params: studyParamsSchema }, config: studyLimit }, controller.refresh)
+  app.get('/:documentId/study/:kind', { schema: { params: studyParamsSchema }, config: studyLimit }, controller.get)
+  // A fresh one (a new quiz)
+  app.post('/:documentId/study/:kind', { schema: { params: studyParamsSchema }, config: studyLimit }, controller.refresh)
 }
 
 export default studyRoutes

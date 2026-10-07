@@ -14,7 +14,7 @@ const POLL_MS = 3000;
 /** Reloads the open document's emotions into the player (if it's still open) */
 export async function refresh(documentId: string) {
   const { voiceId } = usePlayerStore.getState();
-  const reader = await documentsApi.reader(documentId, voiceId ?? undefined);
+  const reader = await documentsApi.script(documentId, voiceId ?? undefined);
   if (usePlayerStore.getState().documentId === documentId) audioEngine.applyReader(reader);
 }
 

@@ -13,10 +13,12 @@ import {
   chunkParamsSchema,
   documentParamsSchema,
   progressBodySchema,
-  statsQuerySchema,
   voiceNoteBodySchema,
 } from './playback.schema.js'
 import { PlaybackService } from './playback.service.js'
+
+// Lives under its document: /documents/:documentId/parts/:index/audio, /progress, /bookmarks, /voice-notes
+export const autoPrefix = '/documents'
 
 const playbackRoutes: FastifyPluginAsyncZod = async (app) => {
   const tts = createTtsService()
@@ -28,9 +30,8 @@ const playbackRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.addHook('preHandler', app.verifyAccess)
 
-  app.get('/stats', { schema: { querystring: statsQuerySchema } }, controller.stats)
   app.get(
-    '/:documentId/chunks/:index/audio',
+    '/:documentId/parts/:index/audio',
     { schema: { params: chunkParamsSchema, querystring: audioQuerySchema }, config: { rateLimit: { max: 120, timeWindow: '1 minute' } } },
     controller.audio,
   )

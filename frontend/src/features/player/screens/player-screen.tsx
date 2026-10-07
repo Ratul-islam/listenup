@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { Spinner, useToast } from 'heroui-native';
-import { Bookmark, BookmarkCheck, ChevronDown, Download, Eraser, MoreHorizontal, ScrollText, Sparkles, Trash2 } from 'lucide-react-native';
+import { Bookmark, BookmarkCheck, ChevronDown, Download, Eraser, MoreHorizontal, PenLine, ScrollText, Sparkles, Trash2 } from 'lucide-react-native';
 import { useRef, useState } from 'react';
 import { View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -200,8 +200,17 @@ export default function PlayerScreen() {
         />
         <SheetAction icon={<Bookmark size={18} color={t.foreground} />} label="Bookmarks" onPress={() => void openBookmarks()} />
         <SheetAction
+          icon={<PenLine size={18} color={t.foreground} />}
+          label="Edit the script"
+          detail="Fix a line or a word; only that part is voiced again"
+          onPress={() => {
+            setMenu(false);
+            router.push({ pathname: '/script/[id]', params: { id: document.id } });
+          }}
+        />
+        <SheetAction
           icon={<Download size={18} color={t.foreground} />}
-          label="Download MP3"
+          label="Download MP3 and subtitles"
           onPress={() => {
             setMenu(false);
             setExporting(true);

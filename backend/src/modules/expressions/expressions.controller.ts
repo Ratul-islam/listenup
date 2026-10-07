@@ -1,16 +1,10 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { sendSuccess } from '../../utils/responses.js'
 import type { ExpressionsService } from './expressions.service.js'
-import type { ChunkExpressionsBody, ChunkParams, ClearQuery, DescribeBody, DocumentParams, NarrationBody } from './expressions.schema.js'
+import type { ChunkParams, ClearQuery, DescribeBody, DocumentParams, NarrationBody } from './expressions.schema.js'
 
 export class ExpressionsController {
   constructor(private readonly expressionsService: ExpressionsService) {}
-
-  setChunk = async (request: FastifyRequest<{ Params: ChunkParams; Body: ChunkExpressionsBody }>, reply: FastifyReply) => {
-    const { documentId, index } = request.params
-    const expressions = await this.expressionsService.setChunk(request.user.sub, documentId, index, request.body)
-    return sendSuccess(reply, { message: 'Saved', data: { expressions } })
-  }
 
   describe = async (request: FastifyRequest<{ Params: ChunkParams; Body: DescribeBody }>, reply: FastifyReply) => {
     const { documentId, index } = request.params

@@ -49,7 +49,7 @@ function Editor({ target, onClose, onDescribe }: { target: ExpressionTarget; onC
   const t = useTokens();
   const documentId = usePlayerStore((s) => s.documentId);
   const chunk = usePlayerStore((s) => s.chunks[target.chunkIndex]);
-  const expressive = usePlayerStore((s) => (chunk ? s.expressive[chunk.language] : true));
+  const expressive = usePlayerStore((s) => (chunk ? (chunk.ownVoiceId && chunk.expressive !== undefined ? chunk.expressive : s.expressive[chunk.language]) : true));
   const voiceId = usePlayerStore((s) => (chunk ? s.voices[chunk.language] : null));
   const tier = usePlayerStore((s) => (chunk ? s.tiers[chunk.language] : 'natural'));
   const { toast } = useToast();

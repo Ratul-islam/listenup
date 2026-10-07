@@ -26,7 +26,9 @@ Where ListenUp makes money, where it loses money, and how to fix the losses.
   3. **AI features with no limit:** OCR of scanned and Bijoy PDFs and the daily digest are open to every plan, including Free. They also **don't count toward the daily spending caps.** ("Make it expressive" is now Plus and Pro only, and sized to the listener's Expressive minutes.)
   4. **Rewarded ads in South Asia.** An ad view in Bangladesh earns about $0.00035, but its 10 Natural minutes cost up to $0.0057.
   5. **Invites in Bangladesh.** 20 Expressive minutes per pair (up to $0.39) probably cost more than the subscribers invites bring there.
+  6. ✅ **Fixed 7 October: the Free Expressive trial.** Bangla defaults to Expressive, so nearly every Bangla free user used all 15 minutes: $0.29 each in 2027, which needed 4–5% of new users to pay. It's now 5 minutes (about $0.10 at most), and break-even is about 1%. See [BUSINESS.md, section 10b](BUSINESS.md#10b-will-listenup-make-money-checked-7-october-2026).
 - **The biggest fixes:**
+  - a 5-minute Free Expressive trial, or phone voices by default for Free Bangla
   - a lower translation allowance in reduced-price countries
   - text-AI spending counted in the daily caps
   - limits on AI features for Free
@@ -88,13 +90,13 @@ These are estimates, assuming about 3–4 characters per token. Check them again
 | Plan | Price | You receive a month after Play's 15% |
 |---|---|---|
 | Plus monthly, global | $3.99 | $3.39 |
-| Plus yearly, global | $34.99 | $2.48 |
+| Plus yearly, global | $39.99 (was $34.99) | $2.83 |
 | Pro monthly, global | $8.99 | $7.64 |
-| Pro yearly, global | $79.99 | $5.67 |
+| Pro yearly, global | $89.99 (was $79.99) | $6.37 |
 | Plus monthly, Bangladesh | ৳149 | $1.03 |
-| Plus yearly, Bangladesh | ৳1,299 | $0.75 |
+| Plus yearly, Bangladesh | ৳1,490 (was ৳1,299) | $0.86 |
 | Pro monthly, Bangladesh | ৳399 | $2.76 |
-| Pro yearly, Bangladesh | ৳3,499 | $2.02 |
+| Pro yearly, Bangladesh | ৳3,990 (was ৳3,499) | $2.30 |
 
 ### Voice cost per plan, 2027
 
@@ -112,13 +114,13 @@ Expressive is about half to two-thirds of the heavy cost, although it's under a 
 | Plan | Typical margin | Heavy margin |
 |---|---|---|
 | Plus monthly, global | ✅ 68% | 🟡 9% |
-| Plus yearly, global | ✅ 56% | 🔴 −25% |
+| Plus yearly, global | ✅ 62% | 🟡 −10% |
 | Pro monthly, global | ✅ 69% | 🟡 13% |
-| Pro yearly, global | ✅ 59% | 🔴 −18% |
+| Pro yearly, global | ✅ 63% | 🟡 −5% |
 | Plus monthly, Bangladesh | ✅ 57% | 🔴 −22% |
-| Plus yearly, Bangladesh | ✅ 41% | 🔴 −68% |
+| Plus yearly, Bangladesh | ✅ 49% | 🔴 −47% |
 | Pro monthly, Bangladesh | ✅ 61% | 🔴 −12% |
-| Pro yearly, Bangladesh | ✅ 46% | 🔴 −54% |
+| Pro yearly, Bangladesh | ✅ 53% | 🔴 −35% |
 
 ### Margins with translation fully used as well
 
@@ -156,7 +158,7 @@ What a free user can cost you each month:
 | Item | Cost |
 |---|---|
 | Natural voices, 60 min | $0.034 |
-| Expressive trial, 15 min **once** | $0.29 in 2027 ($0.15 today), once per new user |
+| Expressive trial, 5 min **once** (15 until 7 October) | $0.10 in 2027 ($0.05 today), once per new user |
 | Translation, 30k characters | ~$0.03 |
 | Daily digest every day | ~$0.15, plus voicing |
 | Rewarded ads, 3 a day × 10 Natural min (if every minute is used) | up to ~$0.51 |
@@ -227,13 +229,13 @@ In order of value for effort.
 |---|---|---|---|
 | 1 | **A lower translation allowance in reduced-price countries:** for example 250k characters on Plus and 750k on Pro | `monthlyTranslateChars` in `plan-catalog.ts`, made per region like the voice allowances | Ends the −115% case. Translation's worst case in Bangladesh drops from $0.95 to ~$0.24 on Plus. |
 | 2 | **Count text-AI spending in the daily caps:** record every `chatCompletion` cost in `SpendDay`, like speech | `lib/openrouter.ts`, `budget.service.ts` | A bad day can't exceed the cap. You also see what each feature really costs. |
-| 3 | **Limit AI features on Free:** about 200 OCR pages a month, a digest every few days. (*Done for "Make it expressive": Plus and Pro only.*) | expressions, ingestion, documents services | Removes Free's unlimited costs. Tagging a whole book is wasted on Free, which only has 15 Expressive minutes. |
+| 3 | **Limit AI features on Free:** about 200 OCR pages a month, a digest every few days. (*Done for "Make it expressive": Plus and Pro only.*) | expressions, ingestion, documents services | Removes Free's unlimited costs. Tagging a whole book is wasted on Free, which only has 5 Expressive minutes. |
 | 4 | ✅ **Done (5 Oct): Make it expressive only where it's heard.** It now directs only as far as the user's remaining Expressive minutes reach | `runAuto` in `expressions.service.ts` | Cuts most of the cost of each run |
-| 5 | **Price yearly plans at about 10 months,** not 8.7: for example ৳1,490 instead of ৳1,299 for Plus in Bangladesh, $39.99 instead of $34.99 globally | Play Console | Typical yearly margins rise by about 5–10 points. Heavy yearly losses shrink. |
+| 5 | ✅ **Decided 7 October: yearly plans at about 10 months:** Plus $39.99 / ৳1,490, Pro $89.99 / ৳3,990 (in [BILLING.md](backend/BILLING.md)) | Play Console, when you create the subscriptions | Typical yearly margins rise by 6–8 points. Heavy yearly losses shrink. |
 | 6 | **Rewarded ads by region:** keep 10 minutes in high-paying countries and give 3 minutes in reduced-price countries, or accept them as a cost of keeping users and measure whether they raise retention | `AD_REWARD_MINUTES` in `constants.ts` | Cuts the South Asia ad loss by about 70% |
 | 7 | **Invite rewards by region:** 5 Expressive minutes each in reduced-price countries, or Natural minutes instead | `INVITE_REWARD_MINUTES` in `constants.ts` | Halves the invite cost where it doesn't pay back |
 | 8 | **Enroll in Play's 15% fee tier** before selling Studio packs | Play Console | Keeps pack margins at 52–77% instead of 42–72% |
-| 9 | **Use Google's Batch/Flex tier, half price,** for audio nobody is waiting on: MP3 exports, offline downloads, podcast episodes, prefetch | A direct Google provider | Expressive cost for those drops from $1.16 to ~$0.55 an hour |
+| 9 | ✅ **Built 7 October: Google directly, with the half-price flex tier** for MP3 exports, offline downloads and podcast episodes. Needs `GEMINI_API_KEY`. | `lib/gemini.ts`, the speech provider | Expressive drops from $1.16 to $1.10 an hour for listening, and to ~$0.55 for exports when flex answers. If Google doesn't offer flex for speech, exports still save the 5.5%. |
 | 10 | **A bKash checkout on the web** (after the creator beta) | New web page | Saves Google's 15% on Bangladeshi payments, and lets most Bangladeshis pay at all |
 | 11 | ✅ **Built (5 Oct): run Kokoro yourself.** `KOKORO_URL`, with OpenRouter as backup. Hosting not chosen. | A server with 4–8 GB of RAM (€10.49 a month on Hetzner CAX21, shared with the backend) | Cheaper than OpenRouter only past about 350–700 hours of Natural audio a month. The main gain now is reliability. |
 | 12 | **Keep Bangla on phone voices after the trial,** and only offer Expressive Bangla as the paid upgrade | Already the behaviour after the trial | Keeps free Bangla listening at $0 |

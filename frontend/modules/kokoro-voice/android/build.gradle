@@ -1,0 +1,21 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.ratul.tts'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.kokorovoice"
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  // Runs Kokoro with ONNX Runtime (Apache-2.0). From JitPack, which the app's
+  // build.gradle already lists; the same file as sherpa-onnx's GitHub release.
+  implementation 'com.github.k2-fsa.sherpa-onnx:sherpa-onnx:v1.13.8'
+}

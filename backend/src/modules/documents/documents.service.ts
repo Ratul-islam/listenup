@@ -8,6 +8,7 @@ import { AppError } from '../../utils/AppError.js'
 import { UNTITLED } from '../ingestion/ingestion.service.js'
 import { LANGS, type Lang } from '../ingestion/text/language.js'
 import { readExpressions } from '../expressions/expression-catalog.js'
+import { readSentenceTakes } from '../tts/render-plan.js'
 import { planFor } from '../tts/tts.service.js'
 import type { UsageService } from '../usage/usage.service.js'
 import type { VoiceDefinition } from '../voices/voice-catalog.js'
@@ -15,7 +16,8 @@ import type { VoicesService } from '../voices/voices.service.js'
 import { env } from '../../config/env.js'
 import { CATEGORY_KINDS, type DocumentsRepository } from './documents.repository.js'
 import { chatCompletion } from '../../lib/openrouter.js'
-import type { DigestBody, ListQuery, TextBody, TranslateBody, UpdateBody, UploadCompleteBody, UploadStartBody, UrlBody } from './documents.schema.js'
+import { lexiconFor } from '../pronunciations/lexicon-cache.js'
+import type { CreateBody, DigestBody, ListQuery, TextBody, TranslateBody, UpdateBody, UploadCompleteBody, UploadStartBody, UrlBody } from './documents.schema.js'
 
 type WithPlayback = Document & { playback?: PlaybackState[] }
 
@@ -41,6 +43,12 @@ export function toSummary(doc: WithPlayback) {
     usedOcr: doc.usedOcr,
     keepClutter: doc.keepClutter,
     translatedFromId: doc.translatedFromId,
+    /** A creator's script, kept in Studio */
+    isScript: doc.isScript,
+    /** When a part was last edited; reading the source again would undo edits */
+    editedAt: doc.editedAt,
+    /** Seconds of new audio this document has used from its owner's minutes */
+    voicedSec: doc.voicedSec,
     inPodcast: doc.podcastAddedAt != null,
     autoExpression: doc.autoExpression,
     narration: {
@@ -149,7 +157,7 @@ export class DocumentsService {
   async list(userId: string, query: ListQuery) {
     const [docs, counts] = await Promise.all([
       this.documentsRepository.list(userId, query),
-      this.documentsRepository.countByKind(userId),
+      this.documentsRepository.countByKind(userId, query.view === 'scripts'),
     ])
     const byKind = Object.fromEntries(counts.map((c) => [c.kind, c._count._all])) as Record<string, number>
     const sum = (kinds: string[]) => kinds.reduce((n, k) => n + (byKind[k] ?? 0), 0)
@@ -197,8 +205,22 @@ export class DocumentsService {
     return { uploadId, url, method: 'PUT' as const, headers: { 'Content-Type': mime } }
   }
 
+  /** Adds pasted text, a link, an uploaded file or today's digest */
+  create(userId: string, body: CreateBody) {
+    switch (body.from) {
+      case 'text':
+        return this.createFromText(userId, body)
+      case 'url':
+        return this.createFromUrl(userId, body)
+      case 'upload':
+        return this.completeUpload(userId, body)
+      case 'digest':
+        return this.digest(userId, body)
+    }
+  }
+
   /** The file is in storage: create the document and start reading it. Safe to repeat. */
-  async completeUpload(userId: string, uploadId: string, { fileName, language }: UploadCompleteBody) {
+  private async completeUpload(userId: string, { uploadId, fileName, language, script }: UploadCompleteBody) {
     const existing = await this.documentsRepository.findOwned(userId, uploadId)
     if (existing) return toSummary(existing)
 
@@ -221,18 +243,24 @@ export class DocumentsService {
       mimeType: mime,
       fileKey,
       languageHint: languageHint(language),
+      isScript: script,
     })
     await this.enqueue({ documentId: doc.id })
     return toSummary(doc)
   }
 
-  async createFromText(userId: string, { title, text, language }: TextBody) {
+  /**
+   * Pasted text of any length up to the limit: it's split into parts on the
+   * server, so a long script never has to be cut up by hand.
+   */
+  private async createFromText(userId: string, { title, text, language, script }: TextBody) {
     const doc = await this.documentsRepository.create({
       userId,
       title: title || UNTITLED,
       kind: 'TEXT',
       mimeType: 'text/plain',
       languageHint: languageHint(language),
+      isScript: script,
     })
     const fileKey = sourceKey(userId, doc.id, 'txt')
     await storage.put(fileKey, Buffer.from(text, 'utf8'), 'text/plain')
@@ -241,9 +269,17 @@ export class DocumentsService {
     return toSummary(saved)
   }
 
-  async createFromUrl(userId: string, { url, language }: UrlBody) {
+  private async createFromUrl(userId: string, { url, language, script }: UrlBody) {
     const host = new URL(url).hostname.replace(/^www\./, '')
-    const doc = await this.documentsRepository.create({ userId, title: host, kind: 'WEB', sourceUrl: url, author: host, languageHint: languageHint(language) })
+    const doc = await this.documentsRepository.create({
+      userId,
+      title: host,
+      kind: 'WEB',
+      sourceUrl: url,
+      author: host,
+      languageHint: languageHint(language),
+      isScript: script,
+    })
     await this.enqueue({ documentId: doc.id })
     return toSummary(doc)
   }
@@ -280,7 +316,7 @@ export class DocumentsService {
    * played in the last two weeks, written by a cheap text model and added to
    * the shelf like pasted text. One per day; asking again returns it.
    */
-  async digest(userId: string, { day }: DigestBody) {
+  private async digest(userId: string, { day }: DigestBody) {
     const existing = await this.documentsRepository.findDigest(userId, day)
     if (existing) return toSummary(existing)
 
@@ -330,13 +366,13 @@ export class DocumentsService {
     }
   }
 
-  /** Renames and/or moves a document between folders and the shelf */
-  async update(userId: string, id: string, { title, folderId }: UpdateBody) {
+  /** Renames, moves between folders and the shelf, or between the shelf and Studio */
+  async update(userId: string, id: string, { title, folderId, script }: UpdateBody) {
     const doc = await this.owned(userId, id)
     if (folderId && !(await this.documentsRepository.findOwnedFolder(userId, folderId))) {
       throw new AppError('Folder not found', 404, 'FOLDER_NOT_FOUND')
     }
-    const saved = await this.documentsRepository.update(id, { title, folderId })
+    const saved = await this.documentsRepository.update(id, { title, folderId, isScript: script })
     return toSummary({ ...saved, playback: doc.playback })
   }
 
@@ -366,22 +402,24 @@ export class DocumentsService {
   }
 
   /**
-   * Everything the player needs: text with sentence offsets for live
-   * highlighting, and real durations for chunks already voiced.
+   * The document as parts, for the player and the script editor: text with
+   * sentence offsets for live highlighting, real durations for parts already
+   * voiced in the current voice (null means it would be voiced next time), and
+   * the listener's pronunciations, which the app applies to voices it makes itself.
    */
-  async reader(userId: string, id: string, voiceId?: string) {
+  async script(userId: string, id: string, voiceId?: string) {
     const doc = await this.owned(userId, id)
     if (doc.status !== 'READY') throw new AppError('This document is still being prepared', 409, 'DOCUMENT_NOT_READY')
 
-    const prefs = await this.voicesService.getPreferences(userId)
+    const [prefs, lexicon] = await Promise.all([this.voicesService.getPreferences(userId), lexiconFor(userId)])
     const chosen = voiceId ?? doc.playback[0]?.voiceId ?? null
     const resolved = Object.fromEntries(LANGS.map((lang) => [lang, this.voicesService.resolve(chosen, lang, prefs)])) as Record<Lang, VoiceDefinition>
     const perLang = <T>(pick: (v: VoiceDefinition) => T) => Object.fromEntries(LANGS.map((lang) => [lang, pick(resolved[lang])])) as Record<Lang, T>
 
-    const [chunks, clips] = await Promise.all([
-      this.documentsRepository.listChunks(id),
-      this.documentsRepository.readyClips(id, LANGS.map((lang) => resolved[lang].id)),
-    ])
+    const chunks = await this.documentsRepository.listChunks(id)
+    // Each part's voice: its own (a character's) or its language's
+    const voiceOf = (c: DocumentChunk) => this.voicesService.forPart(c, resolved[c.language as Lang])
+    const clips = await this.documentsRepository.readyClips(id, [...new Set(chunks.map((c) => voiceOf(c).id))])
     const known = new Map(clips.map((c) => [`${c.chunk.index}:${c.voiceId}`, c]))
 
     return {
@@ -392,19 +430,32 @@ export class DocumentsService {
       /** Each language's voice level; "phone" voices are voiced by the app itself */
       tiers: perLang((v) => v.tier),
       speed: doc.playback[0]?.speed ?? prefs.speed,
+      pronunciations: lexicon.rules,
       chunks: chunks.map((c: DocumentChunk) => {
-        const voice = resolved[c.language as Lang]
+        const voice = voiceOf(c)
         const clip = known.get(`${c.index}:${voice.id}`)
         // Audio made before the latest edit will be regenerated, so its length doesn't count
-        const current = clip && clip.renderKey === planFor(c, voice).key ? clip : null
+        const current = clip && clip.renderKey === planFor(c, voice, lexicon).key ? clip : null
         return {
           index: c.index,
           text: c.text,
           language: c.language as Lang,
           sentences: c.sentences,
           expressions: readExpressions(c.expressions),
+          take: c.take,
+          /** Sentences redone on their own: sentence index → take */
+          sentenceTakes: readSentenceTakes(c.sentenceTakes),
+          /** The voice that reads this part, its level, and whether it's the part's own (a character) */
+          voiceId: voice.id,
+          tier: voice.tier,
+          expressive: voice.expressive,
+          ownVoiceId: c.voiceId,
+          pauseAfterMs: c.pauseAfterMs,
+          locked: c.locked,
           estimatedMs: Math.round(c.estimatedDurationSec * 1000),
           durationMs: current?.durationMs ?? null,
+          /** The voiced audio's loudness in 48 slices (0–100), once measured */
+          peaks: (current?.blob?.peaks as number[] | null | undefined) ?? null,
         }
       }),
     }

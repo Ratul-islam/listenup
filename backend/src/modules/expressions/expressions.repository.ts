@@ -25,10 +25,15 @@ export class ExpressionsRepository {
     return this.db.documentChunk.findMany({ where: { documentId, index: { gte: fromIndex } }, orderBy: { index: 'asc' } })
   }
 
+  /** Parts "Make it expressive" may direct: locked parts keep how they sound */
+  listUnlockedChunks(documentId: string, fromIndex = 0) {
+    return this.db.documentChunk.findMany({ where: { documentId, locked: false, index: { gte: fromIndex } }, orderBy: { index: 'asc' } })
+  }
+
   /** Chunks that have any emotions or sounds */
   listExpressiveChunks(documentId: string) {
     return this.db.documentChunk.findMany({
-      where: { documentId, expressions: { not: Prisma.DbNull } },
+      where: { documentId, locked: false, expressions: { not: Prisma.DbNull } },
       select: { id: true, expressions: true },
     })
   }
@@ -65,9 +70,9 @@ export class ExpressionsRepository {
     return this.db.document.update({ where: { id: documentId }, data, include: { playback: { take: 1 } } })
   }
 
-  /** Every chunk is voiced with this narration from now on (null: plain) */
+  /** Every unlocked chunk is voiced with this narration from now on (null: plain) */
   stampNarration(documentId: string, narration: string | null) {
-    return this.db.documentChunk.updateMany({ where: { documentId }, data: { narration } })
+    return this.db.documentChunk.updateMany({ where: { documentId, locked: false }, data: { narration } })
   }
 
   setAutoStatus(documentId: string, autoExpression: AutoExpressionStatus) {

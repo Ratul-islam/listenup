@@ -8,13 +8,11 @@ import { IconTile } from '@/components/ui/icon-tile';
 import { Text } from '@/components/ui/text';
 import { localDay } from '@/features/player/api/playback.api';
 import { audioEngine } from '@/features/player/engine/audio-engine';
-import { api } from '@/lib/api/client';
 import { getErrorMessage } from '@/lib/api/api-error';
 import { useTokens } from '@/lib/use-tokens';
 
 import { documentsApi } from '../api/documents.api';
 import { useInvalidateDocuments } from '../hooks/use-documents';
-import type { DocumentSummary } from '../types';
 
 const POLL_MS = 2000;
 const WAIT_MS = 90_000;
@@ -22,8 +20,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Makes (or finds) today's digest, waits until it can play, then opens it in the player */
 async function playTodaysDigest() {
-  const { data } = await api.post<{ document: DocumentSummary }>('/documents/digest', { day: localDay() }, { auth: true, timeoutMs: 120_000 });
-  let doc = data.document;
+  let doc = await documentsApi.digest(localDay());
   const deadline = Date.now() + WAIT_MS;
   while (doc.status !== 'READY' && doc.status !== 'FAILED' && Date.now() < deadline) {
     await sleep(POLL_MS);

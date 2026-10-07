@@ -16,7 +16,7 @@ export async function startExportsWorker() {
         await exports.run(documentId, jobId, voiceId)
       } catch (e) {
         console.error(`[exports] ${documentId} failed`, e)
-        const final = job.retryCount >= job.retryLimit || (e instanceof AppError && e.code === 'USAGE_LIMIT_REACHED')
+        const final = job.retryCount >= job.retryLimit || (e instanceof AppError && ['USAGE_LIMIT_REACHED', 'BUDGET_PAUSED', 'EXPORT_UNSUPPORTED'].includes(e.code ?? ''))
         if (final) await exports.fail(documentId, jobId, e)
         else throw e
       }

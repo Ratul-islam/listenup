@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { EMOTIONS, SOUNDS, type ChunkExpressions, type EmotionMark } from '../expressions/expression-catalog.js'
+import { EMPTY_LEXICON, pronounce, type Lexicon } from '../pronunciations/lexicon.js'
 import type { VoiceDefinition } from '../voices/voice-catalog.js'
 
 /** One provider request for a chunk: what to read and how */
@@ -10,6 +11,14 @@ export interface RenderPlan {
   input: string
   /** Delivery direction ("sad and tearful, in a British English accent") */
   style?: string
+  /** "New take" count; above 0 the same words are recorded afresh */
+  take: number
+}
+
+export interface RenderOptions {
+  /** The listener's pronunciations ("Ratul" → "Rah-tool") */
+  lexicon?: Lexicon
+  take?: number
 }
 
 // Bump to regenerate every cached clip (e.g. after rewording styles)
@@ -45,7 +54,18 @@ const styleOf = (m: EmotionMark) => (m.direction ? `spoken ${m.direction}` : m.s
  * throughout just gets that emotion's style. Sounds are inline audio tags.
  * Voices that can't take emotions read the plain text.
  */
-export function planRender(text: string, { emotions, sounds }: ChunkExpressions, voice: VoiceDefinition, narration?: string | null): RenderPlan {
+export function planRender(
+  written: string,
+  marks: ChunkExpressions,
+  voice: VoiceDefinition,
+  narration?: string | null,
+  { lexicon = EMPTY_LEXICON, take = 0 }: RenderOptions = {},
+): RenderPlan {
+  // Pronunciations change the words; emotions and sounds move with them
+  const spoken = pronounce(written, lexicon)
+  const text = spoken.text
+  const emotions = marks.emotions.map((m) => ({ ...m, start: spoken.map(m.start), end: spoken.map(m.end, 'end') })).filter((m) => m.end > m.start)
+  const sounds = marks.sounds.map((s) => ({ ...s, at: spoken.map(s.at) }))
   let input = text
   let style: string | undefined
 
@@ -80,9 +100,21 @@ export function planRender(text: string, { emotions, sounds }: ChunkExpressions,
     input = (input + text.slice(cursor)).replace(/ {2,}/g, ' ').trim()
   }
 
+  // A take of 0 leaves the key as it was before takes existed, so no cached audio goes stale
   const key = createHash('sha256')
-    .update(JSON.stringify([RENDER_VERSION, voice.model, voice.providerVoice, input, style ?? null]))
+    .update(JSON.stringify([RENDER_VERSION, voice.model, voice.providerVoice, input, style ?? null, ...(take ? [take] : [])]))
     .digest('hex')
     .slice(0, 16)
-  return { key, input, style }
+  return { key, input, style, take }
+}
+
+/** "Redo this sentence" takes on a part: sentence index → take (only takes above 0) */
+export function readSentenceTakes(value: unknown): Record<number, number> {
+  const out: Record<number, number> = {}
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (/^\d+$/.test(k) && typeof v === 'number' && Number.isInteger(v) && v > 0) out[Number(k)] = v
+    }
+  }
+  return out
 }

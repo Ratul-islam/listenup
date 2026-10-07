@@ -3,10 +3,12 @@ import type { DocumentChunk } from '../../generated/prisma/client.js'
 import { storage } from '../../lib/storage/storage.js'
 import { AppError } from '../../utils/AppError.js'
 import type { Lang } from '../ingestion/text/language.js'
+import type { Lexicon } from '../pronunciations/lexicon.js'
 import type { TtsService } from '../tts/tts.service.js'
 import { isServerVoice } from '../voices/voice-catalog.js'
 import { NO_EXPRESSIONS, readExpressions, sliceExpressions } from '../expressions/expression-catalog.js'
 import { planAtLeast } from '../plans/plan-catalog.js'
+import { lexiconFor } from '../pronunciations/lexicon-cache.js'
 import type { VoicesService } from '../voices/voices.service.js'
 import type { PlaybackRepository } from './playback.repository.js'
 import type { BookmarkBody, ProgressBody, VoiceNoteBody } from './playback.schema.js'
@@ -67,13 +69,13 @@ export class PlaybackService {
     const chunk = await this.playbackRepository.findChunk(documentId, index)
     if (!chunk) throw new AppError('That part of the document does not exist', 404, 'CHUNK_NOT_FOUND')
 
-    const prefs = await this.voicesService.getPreferences(userId)
+    const [prefs, lexicon] = await Promise.all([this.voicesService.getPreferences(userId), lexiconFor(userId)])
     const chosen = voiceId ?? doc.playback[0]?.voiceId
-    const voice = this.voicesService.resolve(chosen, chunk.language as Lang, prefs)
+    const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(chosen, chunk.language as Lang, prefs))
     if (!isServerVoice(voice)) throw new AppError('Phone voices play on the device, not from the server.', 400, 'PHONE_VOICE')
-    const clip = await this.ttsService.ensureClip(userId, chunk, voice)
+    const clip = await this.ttsService.ensureClip(userId, chunk, voice, lexicon)
 
-    this.prefetch(userId, documentId, index + 1, chosen, prefs)
+    this.prefetch(userId, documentId, index + 1, chosen, prefs, lexicon)
 
     return {
       index,
@@ -85,12 +87,19 @@ export class PlaybackService {
     }
   }
 
-  private prefetch(userId: string, documentId: string, from: number, chosen: string | null | undefined, prefs: Awaited<ReturnType<VoicesService['getPreferences']>>) {
+  private prefetch(
+    userId: string,
+    documentId: string,
+    from: number,
+    chosen: string | null | undefined,
+    prefs: Awaited<ReturnType<VoicesService['getPreferences']>>,
+    lexicon: Lexicon,
+  ) {
     void (async () => {
       const chunks: DocumentChunk[] = await this.playbackRepository.findChunks(documentId, from, PREFETCH_CHUNKS)
       for (const chunk of chunks) {
-        const voice = this.voicesService.resolve(chosen, chunk.language as Lang, prefs)
-        if (isServerVoice(voice)) await this.ttsService.ensureClip(userId, chunk, voice)
+        const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(chosen, chunk.language as Lang, prefs))
+        if (isServerVoice(voice)) await this.ttsService.ensureClip(userId, chunk, voice, lexicon)
       }
     })().catch((e) => {
       if ((e as { code?: string }).code !== 'USAGE_LIMIT_REACHED') console.warn('[playback] prefetch failed', e)
@@ -113,11 +122,11 @@ export class PlaybackService {
     const lead = chunk.text.slice(from, to).indexOf(text)
 
     const prefs = await this.voicesService.getPreferences(userId)
-    const voice = this.voicesService.resolve(voiceId ?? doc.playback[0]?.voiceId, chunk.language as Lang, prefs)
+    const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(voiceId ?? doc.playback[0]?.voiceId, chunk.language as Lang, prefs))
     if (!isServerVoice(voice)) throw new AppError('Phone voices make voice notes on the device.', 400, 'PHONE_VOICE')
 
     const expressions = sliceExpressions(readExpressions(chunk.expressions), from + lead, from + lead + text.length)
-    let note = await this.ttsService.voiceText(userId, text, expressions, voice, chunk.narration)
+    let note = await this.ttsService.voiceText(userId, text, expressions, voice, chunk.narration, await lexiconFor(userId))
     const free = !planAtLeast((await this.playbackRepository.findUserPlan(userId))?.plan, 'plus')
     if (free && note.mimeType === 'audio/mpeg') {
       const tag = await this.ttsService.voiceText(null, NOTE_TAG[voice.language], NO_EXPRESSIONS, voice)

@@ -41,10 +41,11 @@ export class DocumentsRepository {
     })
   }
 
-  list(userId: string, { category, q, sort, folder }: ListQuery) {
+  list(userId: string, { view, category, q, sort, folder }: ListQuery) {
     return this.db.document.findMany({
       where: {
         userId,
+        isScript: view === 'scripts',
         ...(folder && { folderId: folder === 'root' ? null : folder }),
         ...(category !== 'all' && { kind: { in: CATEGORY_KINDS[category] } }),
         ...(q && {
@@ -61,8 +62,8 @@ export class DocumentsRepository {
     })
   }
 
-  countByKind(userId: string) {
-    return this.db.document.groupBy({ by: ['kind'], where: { userId }, _count: { _all: true } })
+  countByKind(userId: string, scripts: boolean) {
+    return this.db.document.groupBy({ by: ['kind'], where: { userId, isScript: scripts }, _count: { _all: true } })
   }
 
   findOwnedFolder(userId: string, id: string) {
@@ -103,7 +104,7 @@ export class DocumentsRepository {
   readyClips(documentId: string, voiceIds: string[]) {
     return this.db.audioClip.findMany({
       where: { chunk: { documentId }, voiceId: { in: voiceIds }, status: 'READY' },
-      select: { voiceId: true, durationMs: true, renderKey: true, chunk: { select: { index: true } } },
+      select: { voiceId: true, durationMs: true, renderKey: true, chunk: { select: { index: true } }, blob: { select: { peaks: true } } },
     })
   }
 }

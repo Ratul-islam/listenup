@@ -25,9 +25,13 @@ export interface PickedFile {
 export type ImportLanguage = Lang | 'auto';
 
 export const documentsApi = {
-  /** `folder`: "root" for loose items, a folder id for its contents; omit to search everything */
-  list: (params: { category: Category; q?: string; sort: SortOrder; folder?: string }) => {
+  /**
+   * The Soundshelf, or Studio's scripts (`view: 'scripts'`). `folder`: "root" for loose
+   * items, a folder id for its contents; omit to search everything.
+   */
+  list: (params: { view?: 'shelf' | 'scripts'; category: Category; q?: string; sort: SortOrder; folder?: string }) => {
     const query = new URLSearchParams({
+      view: params.view ?? 'shelf',
       category: params.category,
       sort: params.sort,
       ...(params.q && { q: params.q }),
@@ -44,7 +48,7 @@ export const documentsApi = {
    * JS memory, and the API's 4.5 MB body limit on Vercel doesn't apply), then
    * the API is told it's there and starts reading it.
    */
-  upload: async (file: PickedFile, language: ImportLanguage = 'auto') => {
+  upload: async (file: PickedFile, language: ImportLanguage = 'auto', script = false) => {
     const source = new File(file.uri);
     const { data: ticket } = await api.post<UploadTicket>('/documents/uploads', { fileName: file.name, size: source.size }, { auth: true });
     const sent = await source.upload(ticket.url, { httpMethod: 'PUT', uploadType: UploadType.BINARY_CONTENT, headers: ticket.headers });
@@ -52,21 +56,30 @@ export const documentsApi = {
       throw new ApiError("The upload didn't go through. Check your connection and try again.", sent.status, 'UPLOAD_FAILED');
     }
     const { data } = await api.post<{ document: DocumentSummary }>(
-      `/documents/uploads/${ticket.uploadId}/complete`,
-      { fileName: file.name, language },
+      '/documents',
+      { from: 'upload', uploadId: ticket.uploadId, fileName: file.name, language, script },
       { auth: true },
     );
     return data.document;
   },
 
-  fromText: (body: { title?: string; text: string; language?: ImportLanguage }) =>
-    api.post<{ document: DocumentSummary }>('/documents/text', body, { auth: true }).then((r) => r.data.document),
+  /** Text of any length up to the limit; the server splits it into parts */
+  fromText: (body: { title?: string; text: string; language?: ImportLanguage; script?: boolean }) =>
+    api.post<{ document: DocumentSummary }>('/documents', { from: 'text', ...body }, { auth: true }).then((r) => r.data.document),
 
-  fromUrl: (url: string, language: ImportLanguage = 'auto') =>
-    api.post<{ document: DocumentSummary }>('/documents/url', { url, language }, { auth: true }).then((r) => r.data.document),
+  fromUrl: (url: string, language: ImportLanguage = 'auto', script = false) =>
+    api.post<{ document: DocumentSummary }>('/documents', { from: 'url', url, language, script }, { auth: true }).then((r) => r.data.document),
+
+  /** Today's digest (one a day; asking again returns it) */
+  digest: (day: string) =>
+    api.post<{ document: DocumentSummary }>('/documents', { from: 'digest', day }, { auth: true, timeoutMs: 120_000 }).then((r) => r.data.document),
 
   rename: (id: string, title: string) =>
     api.patch<{ document: DocumentSummary }>(`/documents/${id}`, { title }, { auth: true }).then((r) => r.data.document),
+
+  /** To Studio as a script, or back onto the Soundshelf */
+  setScript: (id: string, script: boolean) =>
+    api.patch<{ document: DocumentSummary }>(`/documents/${id}`, { script }, { auth: true }).then((r) => r.data.document),
 
   /** Into a folder, or null for back onto the shelf */
   move: (id: string, folderId: string | null) =>
@@ -82,6 +95,7 @@ export const documentsApi = {
 
   remove: (id: string) => api.delete<null>(`/documents/${id}`, { auth: true }),
 
-  reader: (id: string, voiceId?: string) =>
-    api.get<ReaderData>(`/documents/${id}/reader${voiceId ? `?voiceId=${encodeURIComponent(voiceId)}` : ''}`, { auth: true }).then(data),
+  /** The document as parts, with which are voiced in this voice, and the listener's pronunciations */
+  script: (id: string, voiceId?: string) =>
+    api.get<ReaderData>(`/documents/${id}/script${voiceId ? `?voiceId=${encodeURIComponent(voiceId)}` : ''}`, { auth: true }).then(data),
 };

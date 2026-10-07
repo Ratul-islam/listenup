@@ -1,20 +1,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { sendSuccess } from '../../utils/responses.js'
 import type { DocumentsService } from './documents.service.js'
-import type {
-  IdParams,
-  ListQuery,
-  ReaderQuery,
-  ReprocessBody,
-  TextBody,
-  UpdateBody,
-  UploadCompleteBody,
-  UploadParams,
-  UploadStartBody,
-  UrlBody,
-  TranslateBody,
-  DigestBody,
-} from './documents.schema.js'
+import type { CreateBody, IdParams, ListQuery, ReprocessBody, ScriptQuery, TranslateBody, UpdateBody, UploadStartBody } from './documents.schema.js'
 
 export class DocumentsController {
   constructor(private readonly documentsService: DocumentsService) {}
@@ -33,29 +20,14 @@ export class DocumentsController {
     return sendSuccess(reply, { statusCode: 201, data })
   }
 
-  completeUpload = async (request: FastifyRequest<{ Params: UploadParams; Body: UploadCompleteBody }>, reply: FastifyReply) => {
-    const document = await this.documentsService.completeUpload(request.user.sub, request.params.uploadId, request.body)
-    return sendSuccess(reply, { statusCode: 201, message: 'Import started', data: { document } })
-  }
-
-  createFromText = async (request: FastifyRequest<{ Body: TextBody }>, reply: FastifyReply) => {
-    const document = await this.documentsService.createFromText(request.user.sub, request.body)
-    return sendSuccess(reply, { statusCode: 201, message: 'Import started', data: { document } })
-  }
-
-  createFromUrl = async (request: FastifyRequest<{ Body: UrlBody }>, reply: FastifyReply) => {
-    const document = await this.documentsService.createFromUrl(request.user.sub, request.body)
+  create = async (request: FastifyRequest<{ Body: CreateBody }>, reply: FastifyReply) => {
+    const document = await this.documentsService.create(request.user.sub, request.body)
     return sendSuccess(reply, { statusCode: 201, message: 'Import started', data: { document } })
   }
 
   update = async (request: FastifyRequest<{ Params: IdParams; Body: UpdateBody }>, reply: FastifyReply) => {
     const document = await this.documentsService.update(request.user.sub, request.params.id, request.body)
     return sendSuccess(reply, { message: 'Saved', data: { document } })
-  }
-
-  digest = async (request: FastifyRequest<{ Body: DigestBody }>, reply: FastifyReply) => {
-    const document = await this.documentsService.digest(request.user.sub, request.body)
-    return sendSuccess(reply, { data: { document } })
   }
 
   translate = async (request: FastifyRequest<{ Params: IdParams; Body: TranslateBody }>, reply: FastifyReply) => {
@@ -73,8 +45,8 @@ export class DocumentsController {
     return sendSuccess(reply, { message: 'Deleted' })
   }
 
-  reader = async (request: FastifyRequest<{ Params: IdParams; Querystring: ReaderQuery }>, reply: FastifyReply) => {
-    const data = await this.documentsService.reader(request.user.sub, request.params.id, request.query.voiceId)
+  script = async (request: FastifyRequest<{ Params: IdParams; Querystring: ScriptQuery }>, reply: FastifyReply) => {
+    const data = await this.documentsService.script(request.user.sub, request.params.id, request.query.voiceId)
     return sendSuccess(reply, { data })
   }
 }

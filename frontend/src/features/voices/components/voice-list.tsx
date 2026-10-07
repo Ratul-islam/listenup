@@ -1,10 +1,11 @@
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { Spinner, useToast } from 'heroui-native';
 import { Leaf, Pause, Play, Smartphone, Sparkles } from 'lucide-react-native';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 
 import { Text } from '@/components/ui/text';
+import { isOnDeviceActive, useOnDeviceStore } from '@/features/on-device/on-device-voice';
 import { audioEngine } from '@/features/player/engine/audio-engine';
 import { usePlayerStore } from '@/features/player/store/player.store';
 import { getErrorMessage } from '@/lib/api/api-error';
@@ -45,9 +46,10 @@ export function VoiceList({ languages, selectedIds, onSelect, initialLanguage }:
   const [lang, setLang] = useState<Lang>(initialLanguage && languages.includes(initialLanguage) ? initialLanguage : languages[0]);
   const [previewing, setPreviewing] = useState<string | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
+  const onDevice = useOnDeviceStore((s) => isOnDeviceActive(s) && s.speakers);
 
-  // Stop talking when the list goes away
-  useEffect(() => () => preview.pause(), [preview]);
+  // No pause on unmount: useAudioPlayer frees the player first, which already stops
+  // it, and pausing a freed player throws ("shared object that was already released")
 
   const play = async (voice: Voice) => {
     haptics.tap();
@@ -92,9 +94,11 @@ export function VoiceList({ languages, selectedIds, onSelect, initialLanguage }:
         </ScrollView>
       ) : null}
 
-      {TIERS.map(({ tier, title, detail, icon }) => {
+      {TIERS.map(({ tier, title, detail: tierDetail, icon }) => {
         const group = voices.filter((v) => v.tier === tier);
         if (!group.length) return null;
+        // Natural voices made on this phone cost nothing
+        const detail = tier === 'natural' && onDevice && group.every((v) => onDevice[v.id]) ? 'Free and unlimited on this phone' : tierDetail;
         return (
           <View key={tier} className="gap-2">
             <View className="flex-row items-center gap-1.5 px-1">

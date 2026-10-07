@@ -1,6 +1,7 @@
 import { speechCostUsd } from '../../config/voice-pricing.js'
 import { AppError } from '../../utils/AppError.js'
 import { planFor, regionFor } from '../plans/plan-catalog.js'
+import type { SpeechRoute } from '../tts/providers/tts-provider.js'
 import type { ServerTier, VoiceDefinition } from '../voices/voice-catalog.js'
 import type { BudgetService, SpendBucket } from './budget.service.js'
 import type { UsageRepository } from './usage.repository.js'
@@ -125,7 +126,7 @@ export class UsageService {
   }
 
   /** After a clip is made: counts its real length and its estimated cost */
-  async record(userId: string, voice: VoiceDefinition & { tier: ServerTier }, seconds: number, characters: number) {
+  async record(userId: string, voice: VoiceDefinition & { tier: ServerTier }, seconds: number, characters: number, route?: SpeechRoute) {
     const s = await this.summary(userId)
     const sec = Math.round(seconds)
     const expressive = voice.tier === 'expressive'
@@ -142,6 +143,6 @@ export class UsageService {
       const overflow = Math.max(usedSec + sec - limitSec, 0) - Math.max(usedSec - limitSec, 0)
       if (overflow > 0 && bonusSec > 0) await this.usageRepository.spendBonus(userId, overflow)
     }
-    await this.budget.record(this.bucket(s.plan.id), voice.model, seconds, characters, speechCostUsd(voice.model, characters, seconds))
+    await this.budget.record(this.bucket(s.plan.id), voice.model, seconds, characters, speechCostUsd(voice.model, characters, seconds, { route }))
   }
 }

@@ -16,7 +16,16 @@ export function PlayerNotices() {
     const { showReward } = useAdsSdk.getState();
     toast.show({
       label: notice.message,
-      ...(notice.offerAd && showReward
+      ...(notice.offerOnDevice
+        ? {
+            description: 'Download Natural voices to this phone once, and they’re free and unlimited.',
+            actionLabel: 'Get them',
+            onActionPress: ({ hide }) => {
+              hide('all');
+              router.push('/natural-voices');
+            },
+          }
+        : notice.offerAd && showReward
         ? {
             actionLabel: 'Watch an ad',
             onActionPress: ({ hide }) => {
