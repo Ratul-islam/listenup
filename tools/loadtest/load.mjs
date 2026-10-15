@@ -12,7 +12,7 @@ const STATE = DIR + 'load-state.json'
 const b64 = (v) => Buffer.from(typeof v === 'string' ? v : JSON.stringify(v)).toString('base64url')
 function token(user) {
   const now = Math.floor(Date.now() / 1000)
-  const body = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: user.id, email: user.email, iat: now, exp: now + 3600 })}`
+  const body = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: user.id, email: user.email, sid: user.sid, iat: now, exp: now + 3600 })}`
   return `${body}.${createHmac('sha256', SECRET).update(body).digest('base64url')}`
 }
 const tokens = USERS.map(token)

@@ -18,6 +18,10 @@ export interface Voice {
   expressive: boolean;
   /** Kokoro speaker for voicing it on this phone, once Natural voices are downloaded here */
   deviceVoice: string | null;
+  /** The listener's own voice, made from their recording (Pro) */
+  own?: boolean;
+  /** A speaker's voice cloned for one voice translation: offered only in that document */
+  forDocument?: string | null;
 }
 
 /** The Kokoro package for voicing Natural voices on the phone */

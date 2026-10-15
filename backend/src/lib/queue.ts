@@ -24,13 +24,28 @@ export const QUEUES = {
   expirePlans: 'billing.expire-plans',
   translateDocument: 'document.translate',
   prepareOffline: 'document.prepare-offline',
+  publishCommunity: 'community.publish',
+  settleContests: 'community.settle-contests',
+  renewOwnVoices: 'own-voice.renew',
+  voiceTranslation: 'voice.translate',
 } as const
 
-// Voicing or translating a whole book can take a while
+// Translating a whole book can take a while. Exports and downloads run in 10-minute steps
+// (plus joining), so half an hour is plenty for one.
 const EXPIRE_SECONDS: Partial<Record<(typeof QUEUES)[keyof typeof QUEUES], number>> = {
-  [QUEUES.exportAudio]: 3 * 60 * 60,
+  [QUEUES.exportAudio]: 30 * 60,
   [QUEUES.translateDocument]: 60 * 60,
-  [QUEUES.prepareOffline]: 3 * 60 * 60,
+  [QUEUES.prepareOffline]: 30 * 60,
+  // A long writing is voiced in full when it's published
+  [QUEUES.publishCommunity]: 30 * 60,
+  // Ten minutes of speech heard and translated in one request
+  [QUEUES.voiceTranslation]: 15 * 60,
+}
+// Their workers also say they're alive every half minute, so a job whose process died (a
+// deploy, a crash) is retried within a couple of minutes, carrying on from the parts voiced
+const HEARTBEAT_SECONDS: Partial<Record<(typeof QUEUES)[keyof typeof QUEUES], number>> = {
+  [QUEUES.exportAudio]: 60,
+  [QUEUES.prepareOffline]: 60,
 }
 
 export interface ProcessDocumentJob {
@@ -61,6 +76,16 @@ export interface TranslateDocumentJob {
   language: string
 }
 
+export interface PublishCommunityJob {
+  publicationId: string
+  /** Restored by the ListenUp team after the AI check wrongly turned it down */
+  skipCheck?: boolean
+}
+
+export interface VoiceTranslationJob {
+  documentId: string
+}
+
 export interface AutoExpressionJob {
   documentId: string
 }
@@ -82,7 +107,11 @@ export function startQueue() {
   started ??= (async () => {
     await queue.start()
     for (const name of Object.values(QUEUES)) {
-      await queue.createQueue(name, { retryLimit: 2, retryDelay: 10, retryBackoff: true, expireInSeconds: EXPIRE_SECONDS[name] ?? 15 * 60 })
+      const expireInSeconds = EXPIRE_SECONDS[name] ?? 15 * 60
+      const heartbeatSeconds = HEARTBEAT_SECONDS[name]
+      await queue.createQueue(name, { retryLimit: 2, retryDelay: 10, retryBackoff: true, expireInSeconds, ...(heartbeatSeconds && { heartbeatSeconds }) })
+      // A queue made earlier keeps the limits it was made with; bring them up to date
+      await queue.updateQueue(name, { expireInSeconds, heartbeatSeconds: heartbeatSeconds ?? null })
     }
   })()
   return started

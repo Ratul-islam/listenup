@@ -73,6 +73,10 @@
       --cloud-mid: #faf9ff;
       --cloud-bottom: #f3f1ff;
       --glow-pink: #fbeaf6;
+
+      /* The one filled card on the shelf: what you're continuing */
+      --hero-from: #7c69ee;
+      --hero-to: #5741d8;
     }
 
     @variant dark {
@@ -123,6 +127,9 @@
       --cloud-mid: #10112a;
       --cloud-bottom: #1a1640;
       --glow-pink: #2a1a45;
+
+      --hero-from: #4a3da8;
+      --hero-to: #2f2678;
     }
   }
 }
@@ -135,6 +142,8 @@
   --color-cloud-mid: var(--cloud-mid);
   --color-cloud-bottom: var(--cloud-bottom);
   --color-glow-pink: var(--glow-pink);
+  --color-hero-from: var(--hero-from);
+  --color-hero-to: var(--hero-to);
 }
 
 /* Give HeroUI's own text the app's UI face */

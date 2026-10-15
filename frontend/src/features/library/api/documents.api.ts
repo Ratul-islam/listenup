@@ -1,3 +1,4 @@
+import type { StudioSettings } from '@/features/studio/api/studio.api';
 import { File, UploadType } from 'expo-file-system';
 
 import { ApiError } from '@/lib/api/api-error';
@@ -48,7 +49,7 @@ export const documentsApi = {
    * JS memory, and the API's 4.5 MB body limit on Vercel doesn't apply), then
    * the API is told it's there and starts reading it.
    */
-  upload: async (file: PickedFile, language: ImportLanguage = 'auto', script = false) => {
+  upload: async (file: PickedFile, language: ImportLanguage = 'auto', script = false, studio?: StudioSettings) => {
     const source = new File(file.uri);
     const { data: ticket } = await api.post<UploadTicket>('/documents/uploads', { fileName: file.name, size: source.size }, { auth: true });
     const sent = await source.upload(ticket.url, { httpMethod: 'PUT', uploadType: UploadType.BINARY_CONTENT, headers: ticket.headers });
@@ -57,14 +58,15 @@ export const documentsApi = {
     }
     const { data } = await api.post<{ document: DocumentSummary }>(
       '/documents',
-      { from: 'upload', uploadId: ticket.uploadId, fileName: file.name, language, script },
+      { from: 'upload', uploadId: ticket.uploadId, fileName: file.name, language, script, ...(studio && { studio }) },
       { auth: true },
     );
     return data.document;
   },
 
   /** Text of any length up to the limit; the server splits it into parts */
-  fromText: (body: { title?: string; text: string; language?: ImportLanguage; script?: boolean }) =>
+  /** `studio`: a new script's platform and kind of narration */
+  fromText: (body: { title?: string; text: string; language?: ImportLanguage; script?: boolean; studio?: StudioSettings }) =>
     api.post<{ document: DocumentSummary }>('/documents', { from: 'text', ...body }, { auth: true }).then((r) => r.data.document),
 
   fromUrl: (url: string, language: ImportLanguage = 'auto', script = false) =>

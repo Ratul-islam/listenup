@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Spinner, Switch, useToast } from 'heroui-native';
-import { Captions, FileAudio, FileText } from 'lucide-react-native';
-import { useState, type ReactNode } from 'react';
+import * as Linking from 'expo-linking';
+import { Captions, CircleCheck, FileAudio, FileText, Gauge, Info } from 'lucide-react-native';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { ActionSheet } from '@/components/ui/action-sheet';
@@ -19,20 +20,24 @@ import { getErrorMessage, hasErrorCode } from '@/lib/api/api-error';
 import { haptics } from '@/lib/haptics';
 import { useTokens } from '@/lib/use-tokens';
 
+import { useStudioCatalog } from '@/features/studio/hooks/use-studio';
 import { formatClock } from '@/features/studio/lib/time';
 
-import { exportsApi, type ExportVoicing } from '../api/exports.api';
-import { FolderPickCancelled, saveToFolder, savedFolderName } from '../lib/save-to-folder';
+import { exportsApi, type AudioExport, type ExportVoicing } from '../api/exports.api';
+import { exportKey, filesFor, isFollowing, noteSaved, saveWhenReady, useExportStore, type SubtitleChoice } from '../lib/export-runner';
+import { ensureFolder, FolderPickCancelled, saveToFolder, savedFolderName } from '../lib/save-to-folder';
 
-const POLL_MS = 2500;
 // Up to this many parts get one progress tick each
 const MAX_TICKS = 60;
-type SubtitleChoice = 'srt' | 'shortSrt' | 'vtt' | 'off';
-const SUBTITLE_CHOICES: SubtitleChoice[] = ['srt', 'shortSrt', 'vtt', 'off'];
-const SUBTITLE_LABELS: Record<SubtitleChoice, string> = { srt: 'SRT', shortSrt: 'Short lines', vtt: 'VTT', off: 'None' };
+const SUBTITLE_CHOICES: SubtitleChoice[] = ['srt', 'shortSrt', 'wordsSrt', 'vtt', 'off'];
+const SUBTITLE_LABELS: Record<SubtitleChoice, string> = { srt: 'SRT', shortSrt: 'Short lines', wordsSrt: 'Word by word', vtt: 'VTT', off: 'None' };
 const megabytes = (bytes: number) => `${Math.max(bytes / 1_000_000, 0.1).toFixed(1)} MB`;
 
-/** "Download MP3" (with subtitles) for one document: Plus and Pro only */
+/**
+ * "Download MP3" (with subtitles) for one document: Plus and Pro only. The
+ * server makes it in the background; the app saves it to the listener's folder
+ * by itself when it's ready, even after this is closed (see export-runner).
+ */
 export function ExportPanel({ document }: { document: DocumentSummary }) {
   const t = useTokens();
   const { toast } = useToast();
@@ -41,25 +46,34 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
   // Match the voice in the player if this document is open there
   const voiceId = usePlayerStore((s) => (s.documentId === document.id ? (s.voiceId ?? undefined) : undefined));
   const premium = usage.data ? usage.data.plan.id !== 'free' : null;
-  const key = ['export', document.id, voiceId] as const;
-  const status = useQuery({
-    queryKey: key,
-    queryFn: () => exportsApi.status(document.id, voiceId),
-    enabled: premium === true,
-    refetchInterval: (q) => (q.state.data?.status === 'RUNNING' ? POLL_MS : false),
-  });
+  const key = exportKey(document.id, voiceId);
+  // Kept current by the runner while the MP3 is being made
+  const status = useQuery({ queryKey: key, queryFn: () => exportsApi.status(document.id, voiceId), enabled: premium === true });
+  const job = useExportStore((s) => s.jobs[document.id]);
   const [starting, setStarting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Out of minutes: offer the plans next to the message
   const [outOfMinutes, setOutOfMinutes] = useState(false);
   const [folder, setFolder] = useState(savedFolderName);
-  const [subtitles, setSubtitles] = useState<SubtitleChoice>('srt');
+  // A script for a platform starts on that platform's kind of subtitles
+  const [subtitles, setSubtitles] = useState<SubtitleChoice>(() => {
+    const style = document.studio?.guide?.subtitles;
+    return style === 'shortSrt' || style === 'wordsSrt' ? style : style === 'none' ? 'off' : 'srt';
+  });
   const [withText, setWithText] = useState(false);
+  const exp = status.data;
 
-  if (premium === null || (premium && !status.data)) return <Spinner color={t.accent} className="my-6 self-center" />;
+  // Being made, but not followed yet (started before the app was reopened, or on another phone): save it when it's ready
+  useEffect(() => {
+    if (exp?.status === 'RUNNING' && !isFollowing(document.id)) {
+      void saveWhenReady({ documentId: document.id, title: document.title, voiceId, subtitles, withText }, exp);
+    }
+  }, [exp, document.id, document.title, voiceId, subtitles, withText]);
 
-  if (!premium) {
+  if (premium === null || (premium && !exp)) return <Spinner color={t.accent} className="my-6 self-center" />;
+
+  if (!premium || !exp) {
     return (
       <View className="gap-4">
         <Text className="text-[15px] leading-[23px] text-muted">
@@ -70,7 +84,6 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
     );
   }
 
-  const exp = status.data!;
   const ready = exp.status === 'READY' && exp.upToDate && exp.url;
 
   const start = async () => {
@@ -78,9 +91,14 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
     setError(null);
     setOutOfMinutes(false);
     try {
-      client.setQueryData(key, await exportsApi.start(document.id, voiceId));
+      // Picked now, so the MP3 can be saved without asking once it's ready
+      setFolder((await ensureFolder()).name);
+      const started = await exportsApi.start(document.id, voiceId);
+      client.setQueryData(key, started);
       void client.invalidateQueries({ queryKey: ['usage'] });
+      void saveWhenReady({ documentId: document.id, title: document.title, voiceId, subtitles, withText }, started);
     } catch (e) {
+      if (e instanceof FolderPickCancelled) return;
       setError(getErrorMessage(e));
       setOutOfMinutes(hasErrorCode(e, 'USAGE_LIMIT_REACHED'));
     } finally {
@@ -93,14 +111,10 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
     setSaving(true);
     setError(null);
     try {
-      const subtitleUrl = subtitles !== 'off' ? exp.subtitles?.[subtitles] : null;
-      const files = [
-        { url: exp.url, ext: 'mp3' },
-        ...(subtitleUrl ? [{ url: subtitleUrl, ext: subtitles === 'vtt' ? 'vtt' : 'srt' }] : []),
-        ...(withText && exp.transcript ? [{ url: exp.transcript, ext: 'txt' }] : []),
-      ];
+      const files = filesFor(exp, { subtitles, withText });
       const name = await saveToFolder(files, document.title, { chooseFolder });
       setFolder(name);
+      noteSaved(document.id, name);
       haptics.success();
       toast.show({ variant: 'success', label: files.length > 1 ? `${files.length} files saved` : 'MP3 saved', description: `In ${name}` });
     } catch (e) {
@@ -109,6 +123,13 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
       setSaving(false);
     }
   };
+
+  const choices = (
+    <>
+      <PlatformNotes document={document} />
+      <FileChoices exp={exp} subtitles={subtitles} withText={withText} onSubtitles={setSubtitles} onWithText={setWithText} />
+    </>
+  );
 
   if (exp.status === 'RUNNING') {
     const done = exp.chunksDone ?? 0;
@@ -126,43 +147,51 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
         ) : (
           <ProgressBar value={done / total} />
         )}
-        <Text variant="caption">You can close this. It keeps going, and the MP3 will be here when you come back.</Text>
+        <Text variant="caption">
+          {`You can close this, or the app. It saves to ${folder ?? 'your folder'} by itself when it's ready.`}
+        </Text>
+      </View>
+    );
+  }
+
+  if (ready && job?.phase === 'saving') {
+    return (
+      <View className="flex-row items-center gap-3 py-2">
+        <Spinner color={t.accent} />
+        <Text className="flex-1 text-[16px] font-semibold">{`Saving to ${folder ?? 'your folder'}…`}</Text>
       </View>
     );
   }
 
   if (ready) {
+    const saved = job?.phase === 'saved' ? job.folder : null;
     return (
       <View className="gap-4">
         <View className="gap-1 rounded-2xl bg-surface-secondary p-1.5">
           <Deliverable icon={<FileAudio size={18} color={t.accent} />} name={`${document.title}.mp3`} detail={`${formatMinutes((exp.durationMs ?? 0) / 1000)}, ${megabytes(exp.sizeBytes ?? 0)}`} />
           {exp.subtitles && subtitles !== 'off' ? (
-            <Deliverable icon={<Captions size={18} color={t.accent} />} name={`${document.title}.${subtitles === 'vtt' ? 'vtt' : 'srt'}`} detail={subtitles === 'shortSrt' ? 'Short lines' : 'Timed to the audio'} />
+            <Deliverable
+              icon={<Captions size={18} color={t.accent} />}
+              name={`${document.title}.${subtitles === 'vtt' ? 'vtt' : 'srt'}`}
+              detail={subtitles === 'shortSrt' ? 'Short lines' : subtitles === 'wordsSrt' ? 'Word by word' : 'Timed to the audio'}
+            />
           ) : null}
           {exp.transcript && withText ? <Deliverable icon={<FileText size={18} color={t.accent} />} name={`${document.title}.txt`} detail="The script" /> : null}
         </View>
-        {exp.subtitles ? (
-          <View className="gap-1">
-            <Text variant="label" className="text-muted">Subtitles</Text>
-            <View className="-mx-3">
-              <ChoiceChips
-                options={SUBTITLE_CHOICES.filter((c) => c !== 'shortSrt' || exp.subtitles?.shortSrt)}
-                value={subtitles}
-                format={(v) => SUBTITLE_LABELS[v]}
-                onChange={setSubtitles}
-              />
-            </View>
-            {subtitles === 'shortSrt' ? <Text variant="caption">One short line at a time, for Reels, Shorts and TikTok.</Text> : null}
+        {saved ? (
+          <View className="flex-row items-center gap-2.5 rounded-2xl bg-accent-soft-bg px-3.5 py-3" accessibilityLiveRegion="polite">
+            <CircleCheck size={18} color={t.accent} />
+            <Text className="flex-1 text-[14px] leading-[21px] text-accent-soft-fg">{`Saved in ${saved}.`}</Text>
           </View>
         ) : null}
-        {exp.transcript ? (
-          <View className="flex-row items-center justify-between">
-            <Text className="text-[15px]">Also save the script as text</Text>
-            <Switch isSelected={withText} onSelectedChange={setWithText} accessibilityLabel="Also save the script as text" />
-          </View>
-        ) : null}
-        <InlineAlert message={error} />
-        <PrimaryButton label={folder ? `Save to ${folder}` : 'Save to phone'} isLoading={saving} onPress={() => void save()} />
+        {choices}
+        <InlineAlert message={error ?? (job?.phase === 'failed' ? job.error : null)} />
+        <PrimaryButton
+          label={saved ? 'Save again' : folder ? `Save to ${folder}` : 'Save to phone'}
+          variant={saved ? 'secondary' : 'primary'}
+          isLoading={saving}
+          onPress={() => void save()}
+        />
         {folder ? (
           <Pressable onPress={() => void save(true)} disabled={saving} accessibilityRole="button" className="self-center rounded-full px-3 py-1.5 active:bg-default">
             <Text className="text-[14px] font-medium text-accent">Choose another folder</Text>
@@ -183,12 +212,87 @@ export function ExportPanel({ document }: { document: DocumentSummary }) {
           : 'The whole recording as one MP3, with subtitles for your video editor.'}
       </Text>
       <VoicingNote voicing={exp.voicing} />
+      {choices}
       <InlineAlert
         message={error ?? (exp.status === 'FAILED' ? exp.error : null)}
         action={outOfMinutes ? <PrimaryButton label="See plans" size="md" variant="secondary" onPress={() => router.push('/plans')} /> : undefined}
       />
-      <PrimaryButton label={exp.status === 'FAILED' ? 'Try again' : exp.status === 'READY' ? 'Make a fresh MP3' : 'Prepare MP3'} isLoading={starting} onPress={() => void start()} />
+      <PrimaryButton label={exp.status === 'FAILED' ? 'Try again' : exp.status === 'READY' ? 'Make a fresh MP3' : 'Make MP3'} isLoading={starting} onPress={() => void start()} />
+      <Text variant="caption" className="text-center">
+        {folder
+          ? `It's made on our server, and saves to ${folder} by itself. You can close the app meanwhile.`
+          : "You'll pick a folder once. It's made on our server and saves there by itself."}
+      </Text>
     </View>
+  );
+}
+
+/** For a script with a platform: the volume it's finished at, and the platform's rule on AI voices */
+function PlatformNotes({ document }: { document: DocumentSummary }) {
+  const t = useTokens();
+  const catalog = useStudioCatalog();
+  const studio = document.studio;
+  const guide = studio?.guide;
+  if (!guide || !studio?.platform) return null;
+  const name = catalog.data?.platforms.find((p) => p.id === studio.platform)?.label ?? 'this platform';
+  const volume =
+    guide.loudness.label === 'Podcast'
+      ? `Volume set for podcasts: ${guide.loudness.lufs} LUFS, as Apple asks.`
+      : guide.loudness.label === 'Audiobook'
+        ? `Volume set for audiobooks: ${guide.loudness.lufs} LUFS, peaks under ${guide.loudness.peakDb} dB, as Audible asks.`
+        : `Volume set for ${name}: ${guide.loudness.lufs} LUFS, so it isn’t quieter than the videos around it.`;
+  return (
+    <View className="gap-2">
+      <View className="flex-row gap-2.5 rounded-2xl bg-surface-secondary px-3.5 py-3">
+        <Gauge size={17} color={t.accent} />
+        <Text className="flex-1 text-[14px] leading-[21px]">{volume}</Text>
+      </View>
+      {guide.disclosure ? (
+        <View className="flex-row gap-2.5 rounded-2xl bg-surface-secondary px-3.5 py-3">
+          <Info size={17} color={t.accent} />
+          <View className="flex-1 gap-1">
+            <Text className="text-[14px] leading-[21px]">{guide.disclosure.note}</Text>
+            <Pressable onPress={() => void Linking.openURL(guide.disclosure!.url)} accessibilityRole="link" hitSlop={6} className="self-start">
+              <Text className="text-[14px] font-medium text-accent">Read the rule</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** What's saved next to the MP3: subtitles in one of three forms, and the script as text */
+function FileChoices({
+  exp,
+  subtitles,
+  withText,
+  onSubtitles,
+  onWithText,
+}: {
+  exp: AudioExport;
+  subtitles: SubtitleChoice;
+  withText: boolean;
+  onSubtitles: (v: SubtitleChoice) => void;
+  onWithText: (v: boolean) => void;
+}) {
+  // An MP3 made before short lines (or word by word) existed has none
+  const options = SUBTITLE_CHOICES.filter((c) => (c !== 'shortSrt' && c !== 'wordsSrt') || !exp.subtitles || exp.subtitles[c]);
+  return (
+    <>
+      <View className="gap-1">
+        <Text variant="label" className="text-muted">Subtitles</Text>
+        <View className="-mx-3">
+          <ChoiceChips options={options} value={subtitles} format={(v) => SUBTITLE_LABELS[v]} onChange={onSubtitles} />
+        </View>
+        {subtitles === 'shortSrt' ? <Text variant="caption">One short line at a time, for Reels, Shorts and TikTok.</Text> : null}
+        {subtitles === 'wordsSrt' ? <Text variant="caption">Two or three words at a time, the punchy style of TikTok and Reels captions.</Text> : null}
+      </View>
+      <View className="flex-row items-center justify-between">
+        <Text className="text-[15px]">Also save the script as text</Text>
+        <Switch isSelected={withText} onSelectedChange={onWithText} accessibilityLabel="Also save the script as text" />
+      </View>
+    </>
   );
 }
 

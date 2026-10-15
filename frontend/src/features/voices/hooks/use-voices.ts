@@ -4,18 +4,29 @@ import { voicesApi, type PreferencesUpdate, type VoicePreferences } from '../api
 
 export const voicesKey = ['voices'] as const;
 
-export function useVoices() {
-  return useQuery({ queryKey: voicesKey, queryFn: voicesApi.list, staleTime: 5 * 60_000 });
+type VoicesData = Awaited<ReturnType<typeof voicesApi.list>>;
+
+/**
+ * The voices to choose from. A speaker's voice from a voice translation is offered only in
+ * that translation (`documentId`); everywhere else it's left out.
+ */
+export function useVoices(documentId?: string) {
+  return useQuery({
+    queryKey: voicesKey,
+    queryFn: voicesApi.list,
+    staleTime: 5 * 60_000,
+    select: (data: VoicesData) => ({ ...data, voices: data.voices.filter((v) => !v.forDocument || v.forDocument === documentId) }),
+  });
 }
 
+/** A voice by id, whichever it is (a speaker's voice included), to show its name */
 export function useVoice(id: string | null | undefined) {
-  const { data } = useVoices();
+  const { data } = useQuery({ queryKey: voicesKey, queryFn: voicesApi.list, staleTime: 5 * 60_000 });
   return data?.voices.find((v) => v.id === id);
 }
 
 export function useUpdatePreferences() {
   const client = useQueryClient();
-  type VoicesData = Awaited<ReturnType<typeof voicesApi.list>>;
   const write = (update: (p: VoicePreferences) => VoicePreferences) =>
     client.setQueryData(voicesKey, (old: VoicesData | undefined) => (old ? { ...old, preferences: update(old.preferences) } : old));
 

@@ -24,12 +24,15 @@ export interface Cue {
 /**
  * Caption sizes. Standard follows Netflix-style limits (two lines of at most 42
  * characters); short is one line of up to 32, for Reels, Shorts and TikTok,
- * where captions sit large in the middle of a vertical video.
+ * where captions sit large in the middle of a vertical video; words is two or
+ * three words at a time (up to 16 characters), the punchy style TikTok and Reels
+ * captions use.
  */
-export type CaptionStyle = 'standard' | 'short'
+export type CaptionStyle = 'standard' | 'short' | 'words'
 const STYLES: Record<CaptionStyle, { line: number; lineCjk: number; lines: number }> = {
   standard: { line: 42, lineCjk: 16, lines: 2 },
   short: { line: 32, lineCjk: 12, lines: 1 },
+  words: { line: 16, lineCjk: 6, lines: 1 },
 }
 type Size = { line: number; lines: number }
 // How far a boundary may move to land on a pause: further at sentence ends, where pauses are longer

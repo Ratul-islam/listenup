@@ -1,0 +1,336 @@
+diff --git a/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+index c76a9fd2a53743a691782e0f67d0d71401df58f6..7bb3f6017bd91e25069d88b1a240215f1d88b973 100644
+--- a/android/src/main/java/expo/modules/audio/AudioPlayer.kt
++++ b/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+@@ -131,9 +131,9 @@ class AudioPlayer(
+       if (serviceBinder != null && serviceConnection.bindingState == ServiceBindingState.BOUND) {
+         serviceBinder.service.setPlayerMetadata(this, metadata)
+       } else {
+-        appContext?.jsLogger?.warn(
+-          getPlaybackServiceErrorMessage("Cannot update lock screen metadata - service not connected")
+-        )
++        // [ListenUp patch] Not connected yet, or the service went away: it reads `metadata`
++        // when it connects, so bind (again) instead of warning. A no-op while it's binding.
++        serviceConnection.bindWithService()
+       }
+     }
+   }
+diff --git a/android/src/main/java/expo/modules/audio/AudioRecords.kt b/android/src/main/java/expo/modules/audio/AudioRecords.kt
+index 86880d92fd5b6413e8596e1b2b8ae28f2981addd..54a9ce2a79244b7517f2d2459f5af5a8667e3d34 100644
+--- a/android/src/main/java/expo/modules/audio/AudioRecords.kt
++++ b/android/src/main/java/expo/modules/audio/AudioRecords.kt
+@@ -55,7 +55,12 @@ class Metadata(
+   @Field val title: String?,
+   @Field val artist: String?,
+   @Field val albumTitle: String?,
+-  @Field val artworkUrl: URL?
++  @Field val artworkUrl: URL?,
++  // [ListenUp patch] The item playing is one part of something longer (a document read part by
++  // part): the whole thing's length, and where this item starts in it. With these, the lock
++  // screen and notification show the whole thing's progress instead of the item's.
++  @Field val timelineDurationMs: Double?,
++  @Field val timelineOffsetMs: Double?
+ ) : Record
+ 
+ enum class AndroidOutputFormat(val value: String) : Enumerable {
+diff --git a/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+index 196a5d57f887c2667a88543bd2f6a80044a044f2..ccd479b8011973d65e68c3bfdfe7976f7ac4e5b5 100644
+--- a/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
++++ b/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+@@ -88,8 +88,9 @@ class AudioControlsService : MediaSessionService() {
+             currentPlayerRef.play()
+           }
+ 
+-        ACTION_SEEK_FORWARD -> currentPlayerRef.seekTo(currentPlayerRef.currentPosition + SEEK_INTERVAL_MS)
+-        ACTION_SEEK_BACKWARD -> currentPlayerRef.seekTo(currentPlayerRef.currentPosition - SEEK_INTERVAL_MS)
++        // [ListenUp patch] Through the session's player, so a seek can leave the item playing (see MetadataInjectingPlayer)
++        ACTION_SEEK_FORWARD -> (sessionMetadataPlayer ?: currentPlayerRef).let { it.seekTo(it.currentPosition + SEEK_INTERVAL_MS) }
++        ACTION_SEEK_BACKWARD -> (sessionMetadataPlayer ?: currentPlayerRef).let { it.seekTo(it.currentPosition - SEEK_INTERVAL_MS) }
+       }
+     }
+ 
+@@ -320,6 +321,13 @@ class AudioControlsService : MediaSessionService() {
+     postOrStartForegroundNotification(startInForegroundRequired)
+   }
+ 
++  // [ListenUp patch] A seek on a timeline longer than the item playing is the app's to carry out
++  private fun createSessionPlayer(player: AudioPlayer, metadata: Metadata?, options: AudioLockScreenOptions?) =
++    MetadataInjectingPlayer(resolveSessionPlayer(player, options)).apply {
++      updateMetadata(metadata)
++      onTimelineSeek = { positionMs -> player.emit(REMOTE_SEEK_EVENT, mapOf("positionMs" to positionMs.toDouble())) }
++    }
++
+   private fun resolveSessionPlayer(player: AudioPlayer, options: AudioLockScreenOptions?): Player {
+     val isLive = options?.isLiveStream ?: player.isLive
+     if (!isLive) {
+@@ -367,9 +375,7 @@ class AudioControlsService : MediaSessionService() {
+ 
+       appContext?.mainQueue?.launch {
+         val context = appContext?.reactContext ?: return@launch
+-        val sessionPlayer = MetadataInjectingPlayer(resolveSessionPlayer(player, options)).apply {
+-          updateMetadata(metadata)
+-        }
++        val sessionPlayer = createSessionPlayer(player, metadata, options)
+         val session = MediaSession.Builder(context, sessionPlayer)
+           .setCallback(AudioMediaSessionCallback())
+           .build()
+@@ -448,9 +454,7 @@ class AudioControlsService : MediaSessionService() {
+       sessionMetadataPlayer = null
+       appContext?.mainQueue?.launch {
+         val context = appContext?.reactContext ?: return@launch
+-        val sessionPlayer = MetadataInjectingPlayer(resolveSessionPlayer(player, options)).apply {
+-          updateMetadata(metadata)
+-        }
++        val sessionPlayer = createSessionPlayer(player, metadata, options)
+         val session = MediaSession.Builder(context, sessionPlayer)
+           .setCallback(AudioMediaSessionCallback())
+           .build()
+@@ -560,5 +564,7 @@ class AudioControlsService : MediaSessionService() {
+     const val ACTION_SEEK_BACKWARD = "expo.modules.audio.action.SEEK_BACKWARD"
+ 
+     const val SEEK_INTERVAL_MS = 10000L
++
++    private const val REMOTE_SEEK_EVENT = "remoteSeek"
+   }
+ }
+diff --git a/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt b/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt
+index 18203a364d17dcf3de95d22a20175308e3363889..17c19d734be8a1ec99614c4829a52b8547083925 100644
+--- a/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt
++++ b/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt
+@@ -4,6 +4,7 @@ import android.os.Handler
+ import android.os.Looper
+ import androidx.core.net.toUri
+ import androidx.media3.common.FlagSet
++import androidx.media3.common.C
+ import androidx.media3.common.ForwardingPlayer
+ import androidx.media3.common.MediaMetadata
+ import androidx.media3.common.Player
+@@ -22,6 +23,100 @@ internal class MetadataInjectingPlayer(
+   private val listeners = IdentityHashMap<Player.Listener, Player.Listener>()
+   private var injectedMetadata: Metadata? = null
+ 
++  // [ListenUp patch] A timeline longer than the item playing (see Metadata.timelineDurationMs).
++  // While one is set, the session sees the whole timeline: its length, the position within it,
++  // and seeks go to `onTimelineSeek` (the app moves between items itself) instead of the player.
++  var onTimelineSeek: ((positionMs: Long) -> Unit)? = null
++
++  private val timelineDurationMs: Long?
++    get() = injectedMetadata?.timelineDurationMs?.takeIf { it > 0 }?.toLong()
++
++  private val timelineOffsetMs: Long
++    get() = injectedMetadata?.timelineOffsetMs?.toLong() ?: 0L
++
++  private fun onTimeline(itemPositionMs: Long): Long {
++    val duration = timelineDurationMs ?: return itemPositionMs
++    return (timelineOffsetMs + itemPositionMs.coerceAtLeast(0)).coerceIn(0, duration)
++  }
++
++  private fun seekOnTimeline(positionMs: Long): Boolean {
++    val duration = timelineDurationMs ?: return false
++    val target = positionMs.coerceIn(0, duration)
++    val seek = onTimelineSeek
++    if (seek != null) {
++      seek(target)
++    } else {
++      super.seekTo((target - timelineOffsetMs).coerceAtLeast(0))
++    }
++    return true
++  }
++
++  override fun getDuration(): Long = timelineDurationMs ?: super.getDuration()
++
++  override fun getContentDuration(): Long = timelineDurationMs ?: super.getContentDuration()
++
++  override fun getCurrentPosition(): Long = onTimeline(super.getCurrentPosition())
++
++  override fun getContentPosition(): Long = onTimeline(super.getContentPosition())
++
++  override fun getBufferedPosition(): Long = onTimeline(super.getBufferedPosition())
++
++  override fun getContentBufferedPosition(): Long = onTimeline(super.getContentBufferedPosition())
++
++  override fun getBufferedPercentage(): Int {
++    val duration = timelineDurationMs ?: return super.getBufferedPercentage()
++    return (bufferedPosition * 100 / duration).toInt().coerceIn(0, 100)
++  }
++
++  override fun isCurrentMediaItemSeekable(): Boolean = timelineDurationMs != null || super.isCurrentMediaItemSeekable()
++
++  override fun isCommandAvailable(command: Int): Boolean =
++    (timelineDurationMs != null && command == Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) || super.isCommandAvailable(command)
++
++  override fun getAvailableCommands(): Player.Commands {
++    val commands = super.getAvailableCommands()
++    if (timelineDurationMs == null) {
++      return commands
++    }
++    return commands.buildUpon().add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM).build()
++  }
++
++  override fun seekTo(positionMs: Long) {
++    if (!seekOnTimeline(positionMs)) {
++      super.seekTo(positionMs)
++    }
++  }
++
++  override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
++    if (positionMs == C.TIME_UNSET || !seekOnTimeline(positionMs)) {
++      super.seekTo(mediaItemIndex, positionMs)
++    }
++  }
++
++  override fun seekForward() {
++    if (!seekOnTimeline(currentPosition + seekForwardIncrement)) {
++      super.seekForward()
++    }
++  }
++
++  override fun seekBack() {
++    if (!seekOnTimeline(currentPosition - seekBackIncrement)) {
++      super.seekBack()
++    }
++  }
++
++  private fun positionInfo(positionMs: Long) = Player.PositionInfo(
++    null,
++    currentMediaItemIndex,
++    currentMediaItem,
++    null,
++    currentPeriodIndex,
++    positionMs,
++    positionMs,
++    C.INDEX_UNSET,
++    C.INDEX_UNSET
++  )
++
+   override fun addListener(listener: Player.Listener) {
+     val forwardingListener = synchronized(listeners) {
+       listeners.getOrPut(listener) { MetadataForwardingListener(listener) }
+@@ -55,25 +150,37 @@ internal class MetadataInjectingPlayer(
+     }
+ 
+     val previousMetadata = mediaMetadata
++    val previousTimeline = timelineDurationMs to timelineOffsetMs
++    val previousPosition = currentPosition
+     injectedMetadata = metadata
+     val newMetadata = mediaMetadata
++    // [ListenUp patch] A new place on the timeline (the next item started) or a new length
++    val timelineChanged = previousTimeline != (timelineDurationMs to timelineOffsetMs)
+ 
+-    if (previousMetadata == newMetadata) {
++    if (previousMetadata == newMetadata && !timelineChanged) {
+       return
+     }
+ 
+-    val events = Player.Events(
+-      FlagSet.Builder()
+-        .add(Player.EVENT_MEDIA_METADATA_CHANGED)
+-        .build()
+-    )
++    val flags = FlagSet.Builder().add(Player.EVENT_MEDIA_METADATA_CHANGED)
++    if (timelineChanged) {
++      flags.add(Player.EVENT_POSITION_DISCONTINUITY)
++    }
++    val events = Player.Events(flags.build())
+     val currentListeners = synchronized(listeners) {
+       listeners.keys.toList()
+     }
+ 
++    // The session reads the length again with the metadata, and the position on a discontinuity
+     currentListeners.forEach {
+       it.onMediaMetadataChanged(newMetadata)
+     }
++    if (timelineChanged) {
++      val from = positionInfo(previousPosition)
++      val to = positionInfo(currentPosition)
++      currentListeners.forEach {
++        it.onPositionDiscontinuity(from, to, Player.DISCONTINUITY_REASON_INTERNAL)
++      }
++    }
+     currentListeners.forEach {
+       it.onEvents(this, events)
+     }
+@@ -86,6 +193,19 @@ internal class MetadataInjectingPlayer(
+       listener.onMediaMetadataChanged(this@MetadataInjectingPlayer.mediaMetadata)
+     }
+ 
++    // [ListenUp patch] The player's own jumps (a seek, the next file) are told in timeline positions too
++    override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
++      if (timelineDurationMs == null) {
++        listener.onPositionDiscontinuity(oldPosition, newPosition, reason)
++        return
++      }
++      listener.onPositionDiscontinuity(
++        positionInfo(onTimeline(oldPosition.positionMs)),
++        positionInfo(onTimeline(newPosition.positionMs)),
++        reason
++      )
++    }
++
+     override fun onEvents(player: Player, events: Player.Events) {
+       listener.onEvents(this@MetadataInjectingPlayer, events)
+     }
+diff --git a/build/Audio.types.d.ts b/build/Audio.types.d.ts
+index 25604783649fe9b64f6655172f08471a5efcbf45..742879f84d91ed4dff448123c29468170248ea16 100644
+--- a/build/Audio.types.d.ts
++++ b/build/Audio.types.d.ts
+@@ -618,6 +618,14 @@ export type AudioMetadata = {
+     artist?: string;
+     albumTitle?: string;
+     artworkUrl?: string;
++    /**
++     * [ListenUp patch, Android] The item playing is one part of something longer: the whole
++     * thing's length in milliseconds. With `timelineOffsetMs`, the lock screen and notification
++     * show the whole thing's progress, and seeks from them arrive as the `remoteSeek` event.
++     */
++    timelineDurationMs?: number;
++    /** [ListenUp patch, Android] Where the item playing starts on that timeline, in milliseconds. */
++    timelineOffsetMs?: number;
+ };
+ /**
+  * Loop mode for audio playlist playback.
+diff --git a/build/AudioModule.types.d.ts b/build/AudioModule.types.d.ts
+index f3ae4ee4044d86032cd5c6dbcfee6f905d1ce99f..e28ce84fd927cf9552ef33b2d9ca376cfe3ec906 100644
+--- a/build/AudioModule.types.d.ts
++++ b/build/AudioModule.types.d.ts
+@@ -222,6 +222,8 @@ export type AudioEvents = {
+     playbackStatusUpdate(status: AudioStatus): void;
+     /** Fired when audio sampling is enabled and new sample data is available. */
+     audioSampleUpdate(data: AudioSample): void;
++    /** [ListenUp patch, Android] A seek from the lock screen or notification, as a position on the timeline given in the lock-screen metadata. */
++    remoteSeek(event: { positionMs: number }): void;
+ };
+ export declare class AudioRecorder extends SharedObject<RecordingEvents> {
+     /**
+diff --git a/src/Audio.types.ts b/src/Audio.types.ts
+index 906753fa4fcab4323c391bc71c77e7c9f39b7379..e71a54cb54f08fdcd55b7a0412f2f929a1358aaa 100644
+--- a/src/Audio.types.ts
++++ b/src/Audio.types.ts
+@@ -664,6 +664,14 @@ export type AudioMetadata = {
+   artist?: string;
+   albumTitle?: string;
+   artworkUrl?: string;
++  /**
++   * [ListenUp patch, Android] The item playing is one part of something longer: the whole
++   * thing's length in milliseconds. With `timelineOffsetMs`, the lock screen and notification
++   * show the whole thing's progress, and seeks from them arrive as the `remoteSeek` event.
++   */
++  timelineDurationMs?: number;
++  /** [ListenUp patch, Android] Where the item playing starts on that timeline, in milliseconds. */
++  timelineOffsetMs?: number;
+ };
+ 
+ /**
+diff --git a/src/AudioModule.types.ts b/src/AudioModule.types.ts
+index 7e7537173d067fecef767a03dc0f1860c8aca7ac..09c7e9ae4a736092870ded4f21246eec4502e55e 100644
+--- a/src/AudioModule.types.ts
++++ b/src/AudioModule.types.ts
+@@ -280,6 +280,8 @@ export type AudioEvents = {
+   playbackStatusUpdate(status: AudioStatus): void;
+   /** Fired when audio sampling is enabled and new sample data is available. */
+   audioSampleUpdate(data: AudioSample): void;
++  /** [ListenUp patch, Android] A seek from the lock screen or notification, as a position on the timeline given in the lock-screen metadata. */
++  remoteSeek(event: { positionMs: number }): void;
+ };
+ 
+ export declare class AudioRecorder extends SharedObject<RecordingEvents> {

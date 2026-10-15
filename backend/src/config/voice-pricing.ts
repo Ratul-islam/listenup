@@ -53,5 +53,28 @@ export function speechCostUsd(model: string, chars: number, seconds: number, { a
   if (price.perMillionInputTokens) usd += (chars / CHARS_PER_TOKEN / 1e6) * price.perMillionInputTokens * factor
   if (price.perMillionAudioTokens) usd += ((seconds * GEMINI_AUDIO_TOKENS_PER_SEC) / 1e6) * price.perMillionAudioTokens * factor
   if (route === 'google-flex') return usd * FLEX_DISCOUNT
-  return route === 'google' ? usd : usd * (1 + OPENROUTER_FEE)
+  // Vertex is Google's list price too, whether paid in cash or with Cloud credits
+  return route === 'google' || route === 'vertex' ? usd : usd * (1 + OPENROUTER_FEE)
 }
+
+// Text models, USD per million tokens (OpenRouter list prices). Used when OpenRouter doesn't
+// report a request's cost, and to estimate one before it's sent
+const TEXT_PRICES: Record<string, { input: number; output: number }> = {
+  'google/gemini-3.5-flash-lite': { input: 0.3, output: 2.5 },
+  'google/gemini-2.5-flash-lite': { input: 0.1, output: 0.4 },
+  'google/gemini-3.8-flash': { input: 0.75, output: 3.75 },
+}
+// Unknown text models err high
+const TEXT_FALLBACK = { input: 1, output: 5 }
+
+/** Estimated USD for a text request, including OpenRouter's fee on credits */
+export function textCostUsd(model: string, promptTokens: number, completionTokens: number) {
+  const price = TEXT_PRICES[model] ?? TEXT_FALLBACK
+  return ((promptTokens * price.input + completionTokens * price.output) / 1e6) * (1 + OPENROUTER_FEE)
+}
+
+/** What OpenRouter reported a request cost, plus its fee on credits */
+export const withOpenRouterFee = (usd: number) => usd * (1 + OPENROUTER_FEE)
+
+/** Rough tokens in a request before it's sent: its text, plus a page's worth for each image or file */
+export const promptTokensOf = (textChars: number, attachments: number) => Math.round(textChars / CHARS_PER_TOKEN) + attachments * 1500

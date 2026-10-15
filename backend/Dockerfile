@@ -31,6 +31,8 @@ RUN DATABASE_URL=postgresql://build:build@localhost:5432/build pnpm run build
 FROM node:22-alpine AS runtime
 # Package managers aren't needed to run the app
 RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn*
+# ffmpeg turns the phone's recording into the WAV a listener's own voice is made from
+RUN apk add --no-cache ffmpeg
 ENV NODE_ENV=production \
     PORT=8000
 WORKDIR /app

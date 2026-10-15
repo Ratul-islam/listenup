@@ -3,6 +3,7 @@ import { OtpPurpose, type User } from '../../generated/prisma/client.js'
 import type { ResetTokenPayload } from '../../plugins/jwt.js'
 import { AppError } from '../../utils/AppError.js'
 import { sendEmail } from '../../utils/email.js'
+import { emailKey, isGmail } from '../../utils/email-key.js'
 import { fakePasswordCheck, hashPassword, verifyPassword } from '../../utils/password.js'
 import type { UsersRepository } from '../users/users.repository.js'
 import { deletionDate, toPublicUser } from '../users/users.service.js'
@@ -13,8 +14,9 @@ import type {
   LoginBody,
   RegisterBody,
   ResetPasswordBody,
+  VerifyEmailBody,
 } from './auth.schema.js'
-import { passwordResetEmail, verificationEmail } from './auth.emails.js'
+import { accountExistsEmail, passwordResetEmail, verificationEmail } from './auth.emails.js'
 import { invalidOtp, type OtpService } from './otp.service.js'
 import type { ClientContext, TokenService } from './token.service.js'
 import { getOAuthProvider } from './oauth/oauth.registry.js'
@@ -22,6 +24,13 @@ import type { OAuthProfile } from './oauth/oauth.provider.js'
 
 const invalidResetToken = () =>
   new AppError('Reset session is invalid or has expired', 400, 'INVALID_RESET_TOKEN')
+
+// Within the resend wait the last code still works: send nothing rather than answer
+// differently, which would tell anyone asking that the account exists
+const unlessCooldown = (e: unknown) => {
+  if (e instanceof AppError && e.code === 'OTP_COOLDOWN') return null
+  throw e
+}
 
 export class AuthService {
   constructor(
@@ -34,34 +43,55 @@ export class AuthService {
 
   // ---- Email / password ----
 
+  /**
+   * Answers the same way whoever asks, so sign-up can't be used to find out who
+   * has an account: a new address gets a code; an address (or another spelling
+   * of the same inbox, like a Gmail dot or "+tag") that has an account gets an
+   * email saying so instead.
+   */
   async register({ email, password, name }: RegisterBody) {
-    const existing = await this.usersRepository.findByEmail(email)
-    if (existing?.emailVerifiedAt) {
-      throw new AppError('An account with this email already exists', 409, 'EMAIL_TAKEN')
-    }
-
+    // Hashed every time, so a new address doesn't take visibly longer than a known one
     const passwordHash = await hashPassword(password)
-    let code: string
+    const key = emailKey(email)
+    const existing = (await this.usersRepository.findByEmail(email)) ?? (await this.usersRepository.findByEmailKey(key))
 
-    if (existing) {
-      // Sign-up retried before verifying: replace the pending credentials and resend
-      code = await this.otpService.issue(existing.id, OtpPurpose.EMAIL_VERIFICATION)
-      await this.usersRepository.update(existing.id, { passwordHash, name: name ?? existing.name })
-    } else {
-      const user = await this.usersRepository.create({ email, passwordHash, name })
-      code = await this.otpService.issue(user.id, OtpPurpose.EMAIL_VERIFICATION)
+    if (!existing) {
+      const user = await this.usersRepository.create({ email, emailKey: key, passwordHash, name })
+      return this.sendVerificationCode(user)
     }
-
-    await sendEmail({ to: email, ...verificationEmail(code) })
+    if (existing.email === email && !existing.emailVerifiedAt) {
+      // Sign-up retried before verifying: a new code. The password isn't replaced here; the
+      // one given with the code becomes the account's (verifyEmail), so a stranger signing up
+      // with this address in between can't choose it
+      return this.sendVerificationCode(existing)
+    }
+    await sendEmail({ to: existing.email, ...accountExistsEmail() })
   }
 
-  async verifyEmail({ email, otp }: EmailOtpBody, ctx: ClientContext) {
+  private async sendVerificationCode(user: User) {
+    const code = await this.otpService.issue(user.id, OtpPurpose.EMAIL_VERIFICATION).catch(unlessCooldown)
+    if (code) await sendEmail({ to: user.email, ...verificationEmail(code) })
+  }
+
+  /**
+   * Proving the address is what makes the password count: an unverified account's
+   * password may have been typed by someone squatting the address (before or after
+   * its owner signed up), so the one sent with the code replaces it.
+   */
+  async verifyEmail({ email, otp, password }: VerifyEmailBody, ctx: ClientContext) {
     const user = await this.usersRepository.findByEmail(email)
     if (!user || user.emailVerifiedAt) throw invalidOtp()
 
     const record = await this.otpService.verify(user.id, OtpPurpose.EMAIL_VERIFICATION, otp)
+    // Two spellings of one inbox signed up at the same moment: the first verified keeps it
+    if (user.emailKey && (await this.usersRepository.findByEmailKey(user.emailKey, { verifiedOnly: true, exceptId: user.id }))) {
+      throw new AppError('This email already has an account. Sign in instead.', 409, 'EMAIL_TAKEN')
+    }
     await this.otpService.consume(record.id)
-    const verified = await this.usersRepository.update(user.id, { emailVerifiedAt: new Date() })
+    const verified = await this.usersRepository.update(user.id, {
+      emailVerifiedAt: new Date(),
+      passwordHash: await hashPassword(password),
+    })
 
     return this.startSession(verified, ctx)
   }
@@ -70,8 +100,7 @@ export class AuthService {
     const user = await this.usersRepository.findByEmail(email)
     if (!user || user.emailVerifiedAt) return
 
-    const code = await this.otpService.issue(user.id, OtpPurpose.EMAIL_VERIFICATION)
-    await sendEmail({ to: user.email, ...verificationEmail(code) })
+    await this.sendVerificationCode(user)
   }
 
   async login({ email, password }: LoginBody, ctx: ClientContext) {
@@ -111,8 +140,8 @@ export class AuthService {
     const user = await this.usersRepository.findByEmail(email)
     if (!user) return
 
-    const code = await this.otpService.issue(user.id, OtpPurpose.PASSWORD_RESET)
-    await sendEmail({ to: user.email, ...passwordResetEmail(code) })
+    const code = await this.otpService.issue(user.id, OtpPurpose.PASSWORD_RESET).catch(unlessCooldown)
+    if (code) await sendEmail({ to: user.email, ...passwordResetEmail(code) })
   }
 
   async verifyResetOtp({ email, otp }: EmailOtpBody) {
@@ -184,8 +213,13 @@ export class AuthService {
       )
     }
 
-    // Same verified email as an existing user: link instead of creating a duplicate
-    const existing = await this.usersRepository.findByEmail(profile.email)
+    // Same verified address as an existing user: link instead of creating a duplicate. Another
+    // spelling counts only on Gmail, where Google itself makes dots and "+tags" one inbox; on
+    // other providers alice+x@ can be someone else's mailbox, and linking would hand them
+    // alice@'s account (emailKey is for spotting duplicates, never for proving who someone is)
+    const existing =
+      (await this.usersRepository.findByEmail(profile.email)) ??
+      (isGmail(profile.email) ? await this.usersRepository.findByEmailKey(emailKey(profile.email)) : null)
     if (existing) return this.authRepository.linkOAuthAccount(existing, profile)
 
     return this.authRepository.createUserWithOAuthAccount({ ...profile, email: profile.email })

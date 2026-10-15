@@ -2,7 +2,7 @@ import { AD_REWARD_MINUTES, AD_REWARDS_PER_DAY } from '../../config/constants.js
 import { env } from '../../config/env.js'
 import { verifyRewardCallback } from '../../lib/admob-ssv.js'
 import { AppError } from '../../utils/AppError.js'
-import { planFor } from '../plans/plan-catalog.js'
+import { planFor, rewardRegionFor } from '../plans/plan-catalog.js'
 import type { AdsRepository } from './ads.repository.js'
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -11,7 +11,9 @@ const currentPeriod = () => new Date().toISOString().slice(0, 7)
 /**
  * Ads for the Free plan: a banner on the shelf, and a rewarded ad that adds
  * Natural minutes (a few a day). Natural audio costs about $0.03 an hour, so ten
- * minutes cost half a cent; Expressive minutes are never given for ads.
+ * minutes cost half a cent; Expressive minutes are never given for ads. In
+ * reduced-price countries an ad view earns about a twentieth of a cent, so it
+ * gives 3 minutes instead of 10 (the phone's time zone places Free users).
  *
  * With ADMOB_SSV on, rewards arrive only from AdMob's signed server callback.
  * Without it (before AdMob is set up, or with test ads) the app reports the reward
@@ -27,7 +29,7 @@ export class AdsService {
     return {
       showAds,
       reward: {
-        minutes: AD_REWARD_MINUTES,
+        minutes: AD_REWARD_MINUTES[rewardRegionFor(user?.billingCountry, user?.timeZone)],
         perDay: AD_REWARDS_PER_DAY,
         leftToday: showAds ? Math.max(AD_REWARDS_PER_DAY - used, 0) : 0,
         /** Rewards come from AdMob's server callback, not the app */
@@ -40,7 +42,8 @@ export class AdsService {
     const user = await this.adsRepository.findUser(userId)
     if (!user || user.closedAt || planFor(user.plan).id !== 'free') return false
     if ((await this.adsRepository.rewardsOn(userId, today())) >= AD_REWARDS_PER_DAY) return false
-    return this.adsRepository.credit(userId, today(), currentPeriod(), AD_REWARD_MINUTES * 60, transactionId)
+    const minutes = AD_REWARD_MINUTES[rewardRegionFor(user.billingCountry, user.timeZone)]
+    return this.adsRepository.credit(userId, today(), currentPeriod(), minutes * 60, transactionId)
   }
 
   /** The app finished a rewarded ad (used only while server-side verification is off) */

@@ -8,38 +8,40 @@ import { InlineAlert } from '@/components/ui/inline-alert';
 import { SubmitButton } from '@/components/ui/submit-button';
 import { Text } from '@/components/ui/text';
 import { TextLink } from '@/components/ui/text-link';
-import { getErrorMessage, hasErrorCode } from '@/lib/api/api-error';
+import { getErrorMessage } from '@/lib/api/api-error';
 
 import { AuthScreen } from '../components/auth-screen';
 import { GoogleButton } from '../components/google-button';
 import { OrDivider } from '../components/or-divider';
 import { useGoogleSignIn, useSignUp } from '../hooks/use-auth-mutations';
 import { isGoogleSignInEnabled } from '../lib/google-sign-in';
+import { holdPassword } from '../lib/pending-password';
 import { signUpSchema, type SignUpValues } from '../schemas';
 
 export default function SignUpScreen() {
   const signUp = useSignUp();
   const google = useGoogleSignIn();
 
-  const { control, handleSubmit, setFocus, setError } = useForm<SignUpValues>({
+  const { control, handleSubmit, setFocus } = useForm<SignUpValues>({
     resolver: zodResolver(signUpSchema),
     defaultValues: { name: '', email: '', password: '' },
   });
 
+  // The answer is the same whether or not the email has an account (its owner gets an email
+  // saying so), so sign-up can't be used to look people up
   const onSubmit = handleSubmit(async ({ name, email, password }) => {
     google.reset();
     try {
       await signUp.mutateAsync({ email, password, name: name || undefined });
-      router.push({ pathname: '/verify-email', params: { email } });
-    } catch (error) {
-      if (hasErrorCode(error, 'EMAIL_TAKEN')) {
-        setError('email', { message: 'This email already has an account. Sign in instead.' }, { shouldFocus: true });
-      }
+    } catch {
+      return; // shown below from signUp.error
     }
+    holdPassword(email, password);
+    router.push({ pathname: '/verify-email', params: { email } });
   });
 
   const error = signUp.error ?? google.error;
-  const errorMessage = error && !hasErrorCode(error, 'EMAIL_TAKEN') ? getErrorMessage(error) : null;
+  const errorMessage = error ? getErrorMessage(error) : null;
   const isBusy = signUp.isPending || google.isPending;
 
   return (

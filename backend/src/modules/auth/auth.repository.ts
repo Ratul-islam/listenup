@@ -1,5 +1,6 @@
 import type { OtpPurpose, Prisma, PrismaClient, User } from '../../generated/prisma/client.js'
 import { OTP_MAX_ATTEMPTS } from '../../config/constants.js'
+import { emailKey } from '../../utils/email-key.js'
 import type { OAuthProfile } from './oauth/oauth.provider.js'
 
 export class AuthRepository {
@@ -26,6 +27,19 @@ export class AuthRepository {
    */
   async familyIsLive(familyId: string) {
     return (await this.db.refreshToken.count({ where: { familyId, revokedAt: { not: null }, replacedById: null } })) === 0
+  }
+
+  /**
+   * Whether a login session (a refresh token family) is the user's and hasn't been
+   * ended, in one round trip; checked for access tokens (session-check.ts). A deleted
+   * account's rows are gone, so its session isn't live either.
+   */
+  async sessionIsLive(familyId: string, userId: string) {
+    const [row] = await this.db.$queryRaw<{ total: number; ended: number }[]>`
+      SELECT COUNT(*)::int AS total,
+        (COUNT(*) FILTER (WHERE "revokedAt" IS NOT NULL AND "replacedById" IS NULL))::int AS ended
+      FROM refresh_tokens WHERE "familyId" = ${familyId} AND "userId" = ${userId}`
+    return !!row && row.total > 0 && row.ended === 0
   }
 
   // Atomically retires a live token; false if it was already rotated or revoked
@@ -104,6 +118,7 @@ export class AuthRepository {
     return this.db.user.create({
       data: {
         email: profile.email,
+        emailKey: emailKey(profile.email),
         name: profile.name,
         avatarUrl: profile.avatarUrl,
         emailVerifiedAt: new Date(),

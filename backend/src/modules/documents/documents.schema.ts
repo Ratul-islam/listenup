@@ -1,3 +1,4 @@
+import { studioSettingsSchema } from '../studio/studio.schema.js'
 import { z } from 'zod'
 import { MAX_PASTE_CHARS } from '../../config/constants.js'
 import { LANGS } from '../ingestion/text/language.js'
@@ -31,7 +32,8 @@ const scriptField = z.boolean().default(false)
 
 /**
  * One way to add anything: pasted text, a web link, a file already uploaded
- * (step 2 of an upload), or today's digest.
+ * (step 2 of an upload), today's digest, a free classic from Explore, or a
+ * writing from Explore's Community.
  */
 export const createBodySchema = z.discriminatedUnion('from', [
   z.object({
@@ -40,12 +42,16 @@ export const createBodySchema = z.discriminatedUnion('from', [
     text: z.string().trim().min(1, 'Add some text to listen to').max(MAX_PASTE_CHARS),
     language: languageField,
     script: scriptField,
+    /** A new script's platform, narration type and voice settings (Studio) */
+    studio: studioSettingsSchema.optional(),
   }),
   z.object({
     from: z.literal('url'),
     url: z.url('Enter a full link, starting with https://').max(2000),
     language: languageField,
     script: scriptField,
+    /** A new script's platform, narration type and voice settings (Studio) */
+    studio: studioSettingsSchema.optional(),
   }),
   z.object({
     from: z.literal('upload'),
@@ -53,11 +59,23 @@ export const createBodySchema = z.discriminatedUnion('from', [
     fileName: z.string().trim().min(1).max(255),
     language: languageField,
     script: scriptField,
+    /** A new script's platform, narration type and voice settings (Studio) */
+    studio: studioSettingsSchema.optional(),
   }),
   z.object({
     from: z.literal('digest'),
     /** The listener's local date, so "today" follows their calendar */
     day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+  }),
+  z.object({
+    from: z.literal('catalog'),
+    /** A title from GET /catalog */
+    id: z.string().trim().min(1).max(80),
+  }),
+  z.object({
+    from: z.literal('community'),
+    /** A writing from Explore's Community (GET /community) */
+    id: z.uuid(),
   }),
 ])
 
@@ -89,6 +107,8 @@ export type TextBody = Extract<CreateBody, { from: 'text' }>
 export type UrlBody = Extract<CreateBody, { from: 'url' }>
 export type UploadCompleteBody = Extract<CreateBody, { from: 'upload' }>
 export type DigestBody = Extract<CreateBody, { from: 'digest' }>
+export type CatalogBody = Extract<CreateBody, { from: 'catalog' }>
+export type CommunityBody = Extract<CreateBody, { from: 'community' }>
 export type UpdateBody = z.infer<typeof updateBodySchema>
 export type ReprocessBody = z.infer<typeof reprocessBodySchema>
 export type IdParams = z.infer<typeof idParamsSchema>

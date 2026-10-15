@@ -1,1 +1,2 @@
-every changes should have a file of current changes in md file written. it should changes contain last three changes too. should contain next updates left to implement
+every changes should have a file of current changes in md file written. it should changes contain last three changes too. should contain next updates left to implement.
+everytime a core decision or idea is changed or added update related document.

@@ -1,5 +1,7 @@
 import { prisma } from '../../config/db.js'
+import { setTextSpendGuard } from '../../lib/openrouter.js'
 import { BudgetService } from './budget.service.js'
+import { textSpendGuard } from './text-spend.js'
 import { UsageRepository } from './usage.repository.js'
 import { UsageService } from './usage.service.js'
 
@@ -8,6 +10,10 @@ let budget: BudgetService | undefined
 
 export function createUsageService() {
   const repository = new UsageRepository(prisma)
-  budget ??= new BudgetService(repository)
+  if (!budget) {
+    budget = new BudgetService(repository)
+    // Text AI shares the caps with speech
+    setTextSpendGuard(textSpendGuard(budget, repository))
+  }
   return new UsageService(repository, budget)
 }

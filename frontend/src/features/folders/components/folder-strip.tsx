@@ -1,9 +1,8 @@
 import { router } from 'expo-router';
 import { Folder as FolderIcon, FolderPlus } from 'lucide-react-native';
 import { useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { Pressable, ScrollView } from 'react-native';
 
-import { IconTile } from '@/components/ui/icon-tile';
 import { Text } from '@/components/ui/text';
 import { haptics } from '@/lib/haptics';
 import { useTokens } from '@/lib/use-tokens';
@@ -13,9 +12,9 @@ import { useCreateFolder } from '../hooks/use-folders';
 import { FolderActions } from './folder-actions';
 import { FolderNameSheet } from './folder-name-sheet';
 
-const TILE = 'h-[104px] w-[132px] justify-between rounded-3xl p-3.5';
+const PILL = 'h-9 flex-row items-center gap-1.5 rounded-full';
 
-/** Folders across the top of the shelf; tap to open, hold for rename/delete */
+/** Folders in a row above the shelf's list; tap to open, hold for rename/delete */
 export function FolderStrip({ folders }: { folders: Folder[] }) {
   const t = useTokens();
   const create = useCreateFolder();
@@ -24,16 +23,7 @@ export function FolderStrip({ folders }: { folders: Folder[] }) {
 
   return (
     <>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-2.5 px-5">
-        <Pressable
-          onPress={() => setNaming(true)}
-          accessibilityRole="button"
-          className={`${TILE} border border-dashed border-separator active:bg-default`}
-        >
-          <FolderPlus size={22} color={t.accent} strokeWidth={1.9} />
-          <Text className="text-[15px] font-semibold text-accent">New folder</Text>
-        </Pressable>
-
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-2 px-5">
         {folders.map((folder) => (
           <Pressable
             key={folder.id}
@@ -43,18 +33,24 @@ export function FolderStrip({ folders }: { folders: Folder[] }) {
               setActionsFor(folder);
             }}
             accessibilityRole="button"
-            accessibilityLabel={`${folder.name}, ${folder.itemCount} items`}
-            className={`${TILE} bg-surface active:opacity-80 dark:border dark:border-border`}
+            accessibilityLabel={`${folder.name}, ${folder.itemCount === 1 ? '1 item' : `${folder.itemCount} items`}`}
+            className={`${PILL} max-w-[190px] bg-surface pl-3 pr-3.5 active:opacity-80 dark:border dark:border-border`}
           >
-            <IconTile size={34}>
-              <FolderIcon size={17} color={t.accent} strokeWidth={2} />
-            </IconTile>
-            <View>
-              <Text className="text-[15px] font-semibold" numberOfLines={1}>{folder.name}</Text>
-              <Text variant="caption">{folder.itemCount === 1 ? '1 item' : `${folder.itemCount} items`}</Text>
-            </View>
+            <FolderIcon size={15} color={t.accent} strokeWidth={2} />
+            <Text className="shrink text-[13.5px] font-semibold" numberOfLines={1}>{folder.name}</Text>
+            <Text className="text-[12.5px] text-muted">{folder.itemCount}</Text>
           </Pressable>
         ))}
+
+        <Pressable
+          onPress={() => setNaming(true)}
+          accessibilityRole="button"
+          accessibilityLabel="New folder"
+          className={`${PILL} border border-dashed border-separator pl-3 pr-3.5 active:bg-default`}
+        >
+          <FolderPlus size={15} color={t.accent} strokeWidth={2} />
+          <Text className="text-[13.5px] font-semibold text-accent">New folder</Text>
+        </Pressable>
       </ScrollView>
 
       <FolderNameSheet

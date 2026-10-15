@@ -1,8 +1,9 @@
 import { router } from 'expo-router';
 import { Avatar } from 'heroui-native';
 import { ArrowUpDown, Check, Plus } from 'lucide-react-native';
-import { useDeferredValue, useState } from 'react';
+import { useDeferredValue, useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, View } from 'react-native';
+import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ActionSheet, SheetAction } from '@/components/ui/action-sheet';
@@ -18,30 +19,29 @@ import { useOfflineStore } from '@/features/offline/offline-files';
 import { usePlayerStore } from '@/features/player/store/player.store';
 import { initials } from '@/features/voices/voice-catalog';
 import { ApiError } from '@/lib/api/api-error';
+import { usePressScale } from '@/lib/use-press-scale';
 import { cardShadow, useTokens } from '@/lib/use-tokens';
 
 import { CategoryChips } from '../components/category-chips';
 import { ContinueCard } from '../components/continue-card';
-import { DigestCard } from '../components/digest-card';
 import { DocumentActions } from '../components/document-actions';
 import { DocumentRow } from '../components/document-row';
 import { SearchBar } from '../components/search-bar';
 import { useDocuments } from '../hooks/use-documents';
+import { useCardInView, useShelfUi } from '../store/shelf-ui.store';
 import type { Category, DocumentSummary, SortOrder } from '../types';
 
 // The Free plan's banner sits after this many items (or after the last, on a shorter shelf)
 const BANNER_AFTER = 3;
+// Scrolled this far, the Import button folds down to its plus; and the top card counts as out of sight once this little of it is left
+const FOLD_IMPORT_AT = 48;
+const CARD_PEEK = 56;
 
 const SORTS: { id: SortOrder; label: string }[] = [
   { id: 'recent', label: 'Recently added' },
   { id: 'progress', label: 'Recently played' },
   { id: 'title', label: 'Title' },
 ];
-
-function greeting() {
-  const h = new Date().getHours();
-  return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
-}
 
 export default function SoundshelfScreen() {
   const insets = useSafeAreaInsets();
@@ -66,15 +66,32 @@ export default function SoundshelfScreen() {
   const shelfEmpty = !!data && data.counts.all === 0 && folders.data?.length === 0;
   const bottomSpace = insets.bottom + (hasPlayer ? 190 : 120);
 
+  // While the top card is in view it is the player here, and the mini player stays away;
+  // scrolled past it, the mini player comes back and the Import button moves up to clear it
+  const still = useReducedMotion();
+  const cardInView = useCardInView();
+  const miniShown = hasPlayer && !cardInView;
+  const cardBottom = useRef(0);
+  const [folded, setFolded] = useState(false);
+  const raised = useSharedValue(miniShown ? 1 : 0);
+  const wide = useSharedValue(1);
+  useEffect(() => {
+    raised.set(still ? (miniShown ? 1 : 0) : withTiming(miniShown ? 1 : 0, { duration: 240 }));
+  }, [miniShown, raised, still]);
+  useEffect(() => {
+    wide.set(still ? (folded ? 0 : 1) : withTiming(folded ? 0 : 1, { duration: 200 }));
+  }, [folded, wide, still]);
+  const importPress = usePressScale(0.93);
+  const importPlace = useAnimatedStyle(() => ({ bottom: insets.bottom + 92 + 68 * raised.get() }));
+  const importLabel = useAnimatedStyle(() => ({ maxWidth: 70 * wide.get(), opacity: wide.get(), marginLeft: 6 * wide.get() }));
+
   const header = (
-    <View className="gap-6 pb-2">
-      <View className="flex-row items-center justify-between px-5" style={{ paddingTop: insets.top + 16 }}>
-        <View className="gap-0.5">
-          <Text variant="caption" className="text-[14px]">{`${greeting()}${user?.name ? `, ${user.name.split(' ')[0]}` : ''}`}</Text>
-          <Text variant="h1" accessibilityRole="header">Soundshelf</Text>
-        </View>
-        <Pressable onPress={() => router.push('/profile')} accessibilityRole="button" accessibilityLabel="Profile" hitSlop={6}>
-          <Avatar size="md" alt={user?.name ?? user?.email ?? 'Account'}>
+    <View className="gap-[18px] pb-1" style={{ paddingTop: insets.top + 10 }}>
+      {/* Search is the top of the page; the account sits beside it */}
+      <View className="flex-row items-center gap-2.5 px-5">
+        <SearchBar value={query} onChange={setQuery} />
+        <Pressable onPress={() => router.push('/profile')} accessibilityRole="button" accessibilityLabel="Profile" hitSlop={8} className="active:opacity-80">
+          <Avatar size="sm" alt={user?.name ?? user?.email ?? 'Account'}>
             {user?.avatarUrl ? <Avatar.Image source={{ uri: user.avatarUrl }} /> : null}
             <Avatar.Fallback>{initials(user?.name ?? user?.email ?? '?')}</Avatar.Fallback>
           </Avatar>
@@ -83,20 +100,28 @@ export default function SoundshelfScreen() {
 
       {shelfEmpty ? null : (
         <>
-          <View className="gap-2 px-5">
-            <ContinueCard />
-            {offline ? null : <DigestCard />}
-          </View>
-          <View className="gap-3">
-            <View className="flex-row items-center gap-2 px-5">
-              <SearchBar value={query} onChange={setQuery} />
-              <IconButton accessibilityLabel={`Sort: ${SORTS.find((s) => s.id === sort)?.label}`} onPress={() => setSorting(true)} size={48}>
-                <ArrowUpDown size={19} color={t.foreground} />
+          {browsing ? (
+            <View
+              className="px-5"
+              onLayout={(e) => {
+                cardBottom.current = e.nativeEvent.layout.y + e.nativeEvent.layout.height;
+              }}
+            >
+              <ContinueCard />
+            </View>
+          ) : null}
+          {/* Folders and the type filters read as one block of "where to look", closer to each other than to the card above */}
+          <View className="gap-2.5">
+            {browsing ? <FolderStrip folders={folders.data ?? []} /> : null}
+            <View className="flex-row items-center pr-3">
+              <View className="flex-1">
+                <CategoryChips value={category} onChange={setCategory} />
+              </View>
+              <IconButton accessibilityLabel={`Sort: ${SORTS.find((s) => s.id === sort)?.label}`} onPress={() => setSorting(true)} size={40}>
+                <ArrowUpDown size={17} color={t.muted} />
               </IconButton>
             </View>
-            <CategoryChips value={category} onChange={setCategory} />
           </View>
-          {browsing ? <FolderStrip folders={folders.data ?? []} /> : null}
           {offline ? (
             <Text variant="caption" className="px-5">
               {items.length ? 'You’re offline. These downloads play without a connection.' : 'You’re offline. Downloaded items show up here.'}
@@ -139,6 +164,12 @@ export default function SoundshelfScreen() {
         }
         contentContainerStyle={{ paddingBottom: bottomSpace }}
         keyboardShouldPersistTaps="handled"
+        onScroll={(e) => {
+          const y = e.nativeEvent.contentOffset.y;
+          useShelfUi.getState().setCardScrolledAway(cardBottom.current > 0 && y > cardBottom.current - CARD_PEEK);
+          setFolded(y > FOLD_IMPORT_AT);
+        }}
+        scrollEventThrottle={32}
         refreshControl={
           <RefreshControl
             refreshing={isFetching && !isLoading}
@@ -150,16 +181,23 @@ export default function SoundshelfScreen() {
       />
 
       {shelfEmpty ? null : (
-        <Pressable
-          onPress={() => router.push('/import')}
-          accessibilityRole="button"
-          accessibilityLabel="Import"
-          className="absolute right-5 flex-row items-center gap-2 rounded-full bg-accent py-3.5 pl-4 pr-5 active:opacity-85"
-          style={{ bottom: insets.bottom + (hasPlayer ? 160 : 92), boxShadow: cardShadow }}
-        >
-          <Plus size={20} color={t.accentForeground} strokeWidth={2.4} />
-          <Text className="text-[15px] font-semibold text-accent-foreground">Import</Text>
-        </Pressable>
+        <Animated.View className="absolute right-5" style={[importPlace, importPress.style]}>
+          <Pressable
+            onPress={() => router.push('/import')}
+            onPressIn={importPress.onPressIn}
+            onPressOut={importPress.onPressOut}
+            accessibilityRole="button"
+            accessibilityLabel="Import"
+            className="h-12 min-w-12 flex-row items-center justify-center rounded-full bg-accent px-3.5"
+            style={{ boxShadow: cardShadow }}
+          >
+            <Plus size={20} color={t.accentForeground} strokeWidth={2.4} />
+            {/* Its name folds away once the list is scrolled, leaving the plus */}
+            <Animated.View style={[{ overflow: 'hidden' }, importLabel]}>
+              <Text className="text-[14.5px] font-semibold text-accent-foreground" numberOfLines={1}>Import</Text>
+            </Animated.View>
+          </Pressable>
+        </Animated.View>
       )}
 
       <ActionSheet visible={sorting} onClose={() => setSorting(false)} title="Sort by">

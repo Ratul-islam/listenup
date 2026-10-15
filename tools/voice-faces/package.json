@@ -1,0 +1,14 @@
+{
+  "name": "voice-faces",
+  "private": true,
+  "type": "module",
+  "description": "Draws the profile picture of every built-in voice into frontend/assets/voices",
+  "scripts": {
+    "generate": "node generate.mjs"
+  },
+  "dependencies": {
+    "@dicebear/core": "^9.2.4",
+    "@dicebear/lorelei": "^9.2.4",
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}

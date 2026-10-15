@@ -2,12 +2,19 @@ import { randomInt } from 'node:crypto'
 import { INVITE_MAX_REWARDS, INVITE_MIN_LISTEN_SEC, INVITE_REDEEM_DAYS, INVITE_REWARD_MINUTES } from '../../config/constants.js'
 import { env } from '../../config/env.js'
 import { AppError } from '../../utils/AppError.js'
+import { rewardRegionFor } from '../plans/plan-catalog.js'
 import type { InvitesRepository } from './invites.repository.js'
 
 // No 0/O, 1/I/L: codes get read aloud and typed
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
 const CODE_LENGTH = 6
 const DAY_MS = 24 * 60 * 60_000
+
+/** One person's invite minutes: fewer in reduced-price countries (store country, or the phone's time zone) */
+const minutesFor = (user: { billingCountry: string | null; timeZone: string | null }) => INVITE_REWARD_MINUTES[rewardRegionFor(user.billingCountry, user.timeZone)]
+
+/** Two accounts on one inbox (a Gmail dot or "+tag" apart, made before sign-up stopped that): the same person */
+const sameInbox = (a: { emailKey: string | null }, b: { emailKey: string | null }) => !!a.emailKey && a.emailKey === b.emailKey
 
 const newCode = () => Array.from({ length: CODE_LENGTH }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('')
 
@@ -47,7 +54,8 @@ export class InvitesService {
     return {
       code,
       link: playLink(code),
-      minutesEach: INVITE_REWARD_MINUTES,
+      /** What this user gets per invite; a friend elsewhere may get a different amount */
+      minutesEach: minutesFor(user),
       maxRewards: INVITE_MAX_REWARDS,
       rewarded: counts.rewarded,
       pending: counts.pending,
@@ -66,7 +74,7 @@ export class InvitesService {
     }
     const inviter = await this.invitesRepository.findByCode(code)
     if (!inviter || inviter.closedAt) throw new AppError("That invite code doesn't exist. Check it and try again.", 404, 'INVITE_NOT_FOUND')
-    if (inviter.id === userId) throw new AppError("That's your own code. Share it with a friend instead.", 400, 'INVITE_OWN_CODE')
+    if (inviter.id === userId || sameInbox(inviter, user)) throw new AppError("That's your own code. Share it with a friend instead.", 400, 'INVITE_OWN_CODE')
     if (inviter.invitedById === userId) throw new AppError("You invited this person, so you can't use their code.", 400, 'INVITE_CIRCULAR')
 
     await this.invitesRepository.setInviter(userId, inviter.id)
@@ -85,7 +93,10 @@ export class InvitesService {
 
     const inviter = user.invitedBy
     const inviterEligible =
-      !!inviter && !inviter.closedAt && (await this.invitesRepository.inviteCounts(inviter.id)).rewarded < INVITE_MAX_REWARDS
-    return this.invitesRepository.reward(userId, inviterEligible ? inviter!.id : null, INVITE_REWARD_MINUTES * 60)
+      !!inviter && !inviter.closedAt && !sameInbox(inviter, user) && (await this.invitesRepository.inviteCounts(inviter.id)).rewarded < INVITE_MAX_REWARDS
+    return this.invitesRepository.reward(
+      { id: userId, seconds: minutesFor(user) * 60 },
+      inviterEligible ? { id: inviter!.id, seconds: minutesFor(inviter!) * 60 } : null,
+    )
   }
 }

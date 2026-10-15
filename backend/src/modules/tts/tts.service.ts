@@ -4,17 +4,21 @@ import { CHARS_PER_SECOND } from '../../config/constants.js'
 import type { AudioClip, DocumentChunk } from '../../generated/prisma/client.js'
 import { storage } from '../../lib/storage/storage.js'
 import { AppError } from '../../utils/AppError.js'
-import { audioFrames } from '../../lib/audio/mp3.js'
-import { readExpressions, sliceExpressions, type ChunkExpressions } from '../expressions/expression-catalog.js'
+import { pcmToMp3 } from '../../lib/audio/encode.js'
+import { audioFrames, mp3SampleRate, normalizeMp3 } from '../../lib/audio/mp3.js'
+import { performanceKey, readExpressions, sliceExpressions, type ChunkExpressions } from '../expressions/expression-catalog.js'
 import { buildLexicon, EMPTY_LEXICON, type Lexicon, type PronunciationRule } from '../pronunciations/lexicon.js'
 import type { UsageService } from '../usage/usage.service.js'
-import { isServerVoice, type ServerTier, type VoiceDefinition } from '../voices/voice-catalog.js'
-import type { TtsProvider } from './providers/tts-provider.js'
-import { decodeMp3, pausesIn } from '../../lib/audio/pauses.js'
+import { isServerVoice, soundOf, type ServerTier, type VoiceDefinition } from '../voices/voice-catalog.js'
+import type { Delivery, SynthesisRequest, TtsProvider } from './providers/tts-provider.js'
+import { textAnchors, type TextAnchor } from '../../lib/audio/align.js'
+import { decodeMp3, markJoins, pausesIn, type Pause } from '../../lib/audio/pauses.js'
 import { peaksOf } from '../../lib/audio/peaks.js'
+import { unpackPerformance, type Prosody } from '../../lib/audio/prosody.js'
 import { spliceSentences } from '../../lib/audio/splice.js'
-import type { SpeechRoute } from './providers/tts-provider.js'
-import { planRender, readSentenceTakes, type RenderPlan } from './render-plan.js'
+import type { SpeechJoin, SpeechRoute } from './providers/tts-provider.js'
+import { adjustKey, planRender, readSentenceTakes, segmentsKey, shapeKey, type RenderPlan } from './render-plan.js'
+import { readDelivery } from '../studio/studio-catalog.js'
 import type { TtsRepository } from './tts.repository.js'
 
 // A GENERATING row older than this was left by a crashed request
@@ -24,6 +28,10 @@ const POLL_MS = 400
 const ENCODING_VERSION = 2
 // Shared files nobody plays are kept this long before the daily cleanup removes them
 const ORPHAN_GRACE_MS = 24 * 60 * 60_000
+// Silence between joined clips (a voice note and its "Made with ListenUp")
+const JOIN_GAP_MS = 400
+// How long playback waits for a new clip to be measured before starting without its timing
+const MEASURE_WAIT_MS = 700
 
 const phoneVoiceError = () => new AppError('Phone voices play on the device, not from the server.', 400, 'PHONE_VOICE')
 
@@ -90,8 +98,9 @@ function lexiconOf(chunk: DocumentChunk, lexicon: Lexicon) {
 export function planFor(chunk: DocumentChunk, voice: VoiceDefinition, lexicon: Lexicon): PartPlan {
   const words = lexiconOf(chunk, lexicon)
   const marks = readExpressions(chunk.expressions)
-  const base = planRender(chunk.text, marks, voice, chunk.narration, { lexicon: words, take: chunk.take })
-  const spans = (chunk.sentences as unknown as { start: number; end: number }[]) ?? []
+  const spans = (chunk.sentences as unknown as { start: number; end: number; paragraphStart?: boolean }[]) ?? []
+  const delivery = readDelivery(chunk.delivery)
+  const base = planRender(chunk.text, marks, voice, chunk.narration, { lexicon: words, take: chunk.take, sentences: spans, delivery })
   const sentences = Object.entries(readSentenceTakes(chunk.sentenceTakes))
     .map(([i, take]) => ({ index: Number(i), take }))
     .filter(({ index }) => spans[index] && chunk.text.slice(spans[index].start, spans[index].end).trim())
@@ -100,7 +109,7 @@ export function planFor(chunk: DocumentChunk, voice: VoiceDefinition, lexicon: L
       const { start, end } = spans[index]
       // The part's own take is part of it, so a sentence redone after a new take of the part is recorded afresh
       const sentenceTake = chunk.take * 1000 + take
-      return { index, take, plan: planRender(chunk.text.slice(start, end), sliceExpressions(marks, start, end), voice, chunk.narration, { lexicon: words, take: sentenceTake }) }
+      return { index, take, plan: planRender(chunk.text.slice(start, end), sliceExpressions(marks, start, end), voice, chunk.narration, { lexicon: words, take: sentenceTake, delivery }) }
     })
   if (!sentences.length) return { ...base, base, sentences }
   const key = createHash('sha256')
@@ -111,17 +120,74 @@ export function planFor(chunk: DocumentChunk, voice: VoiceDefinition, lexicon: L
 }
 
 /** A part with redone sentences spliced in: its plan key covers the whole recording and every sentence take */
-const spliceHash = (provider: string, voice: VoiceDefinition, plan: PartPlan) =>
-  createHash('sha256').update(JSON.stringify(['splice', ENCODING_VERSION, provider, voice.model, voice.providerVoice, plan.key])).digest('hex')
+const spliceHash = (provider: string, plan: PartPlan) =>
+  createHash('sha256').update(JSON.stringify(['splice', ENCODING_VERSION, provider, plan.voice.model, soundOf(plan.voice), plan.key])).digest('hex')
 
 /**
  * Identifies the exact speech a request produces, across every user's
  * documents. A new take is its own recording, never shared with take 0.
+ * The voice is the plan's: the one asked for, on the model that reads this text.
  */
-const blobHash = (provider: string, voice: VoiceDefinition, plan: RenderPlan) =>
+const blobHash = (provider: string, plan: RenderPlan) =>
   createHash('sha256')
-    .update(JSON.stringify([ENCODING_VERSION, provider, voice.model, voice.providerVoice, plan.input, plan.style ?? null, ...(plan.take ? [plan.take] : [])]))
+    .update(JSON.stringify([ENCODING_VERSION, provider, plan.voice.model, soundOf(plan.voice), plan.input, plan.style ?? null, ...(plan.take ? [plan.take] : []), ...shapeKey(plan.shape), ...segmentsKey(plan.segments), ...adjustKey(plan.adjust)]))
     .digest('hex')
+
+// Performances read lately, so a part with one isn't fetched from storage for every take
+const performances = new Map<string, Prosody | null>()
+
+/**
+ * A kept performance's measurements. Null when it's gone (its document was
+ * deleted) or isn't one: the line is then voiced unshaped. A file that's there
+ * and can't be fetched just now is an error, so that unshaped audio isn't
+ * kept as the line's.
+ */
+async function performance(ref: { id: string; in: string }) {
+  const key = performanceKey(ref)
+  if (performances.has(key)) return performances.get(key)!
+  let file: Buffer | null = null
+  try {
+    file = await storage.get(key)
+  } catch (e) {
+    if (await storage.exists(key)) throw e
+  }
+  let said: Prosody | null = null
+  try {
+    said = file && unpackPerformance(JSON.parse(file.toString('utf8')))
+  } catch {
+    // Not a performance at all
+  }
+  if (!said) console.warn(`[tts] the performance ${ref.id} is gone or can't be read; its line is voiced unshaped`)
+  if (performances.size > 200) performances.clear()
+  performances.set(key, said)
+  return said
+}
+
+/** A delivery with its performance's measurements read in, or without the performance when it's gone */
+async function withPerformance<T extends Delivery>(delivery: T): Promise<T> {
+  if (!delivery.shape) return delivery
+  const said = await performance(delivery.shape)
+  const { shape, ...plain } = delivery
+  return (said ? { ...delivery, shape: { ...shape, said } } : plain) as T
+}
+
+/** Where a voice's sample is kept, without its extension */
+export const previewPrefix = (provider: string, voice: VoiceDefinition) => `previews/${provider}/${voice.id}-${`${soundOf(voice)}-${voice.model}`.replace(/[^a-z0-9]+/gi, '_')}`
+
+/** What a plan asks of the speech service */
+const requestOf = async (plan: RenderPlan, background: boolean): Promise<SynthesisRequest> =>
+  withPerformance({
+    text: plan.input,
+    voice: plan.voice,
+    style: plan.style,
+    check: plan.check,
+    tries: plan.tries,
+    levelDb: plan.levelDb,
+    shape: plan.shape,
+    segments: plan.segments && (await Promise.all(plan.segments.map(withPerformance))),
+    background,
+    adjust: plan.adjust,
+  })
 
 /**
  * Generates and caches speech per (chunk, voice). A clip is reused while its
@@ -136,6 +202,8 @@ const blobHash = (provider: string, voice: VoiceDefinition, plan: RenderPlan) =>
  */
 export class TtsService {
   private readonly inflight = new Map<string, Promise<ReadyClip>>()
+  /** Audio being measured right now, by file hash */
+  private readonly measuring = new Map<string, Promise<Pause[] | null>>()
 
   constructor(
     private readonly ttsRepository: TtsRepository,
@@ -160,6 +228,14 @@ export class TtsService {
     return pending
   }
 
+  /** Whether a part's speech in this voice already exists, so voicing it costs nobody anything */
+  async hasAudio(chunk: DocumentChunk, voice: VoiceDefinition, lexicon: Lexicon) {
+    if (!isServerVoice(voice)) return false
+    const plan = planFor(chunk, voice, lexicon)
+    const hash = plan.sentences.length ? spliceHash(this.provider.name, plan) : blobHash(this.provider.name, plan)
+    return !!(await this.ttsRepository.findBlob(hash))
+  }
+
   private isCurrent(clip: AudioClip | null, plan: RenderPlan) {
     return clip?.status === 'READY' && clip.provider === this.provider.name && clip.renderKey === plan.key
   }
@@ -180,36 +256,73 @@ export class TtsService {
   }
 
   /**
-   * Measures a new MP3 once, in the background: its silences (subtitles,
-   * sentence redos) and its waveform (Studio). Nobody waits for it.
+   * Measures a new MP3 once, in the background: its silences (the player's
+   * highlight, subtitles, sentence redos) and its waveform (Studio). `joins`
+   * are where the takes of a joined recording start, which is kept with them.
    */
-  private analyse(hash: string, audio: Buffer, mimeType: string) {
+  private analyse(hash: string, audio: Buffer, mimeType: string, joins: SpeechJoin[] = []) {
     if (mimeType !== 'audio/mpeg') return
-    void decodeMp3(audio)
-      .then((decoded) => this.ttsRepository.saveAnalysis(hash, { pauses: pausesIn(decoded), peaks: peaksOf(decoded) }))
-      .catch((e) => console.warn(`[tts] couldn't measure ${hash.slice(0, 8)}`, e))
+    const measured = decodeMp3(audio)
+      .then(async (decoded) => {
+        const pauses = markJoins(pausesIn(decoded), joins)
+        await this.ttsRepository.saveAnalysis(hash, { pauses, peaks: peaksOf(decoded) })
+        return pauses
+      })
+      .catch((e) => {
+        console.warn(`[tts] couldn't measure ${hash.slice(0, 8)}`, e)
+        return null
+      })
+      .finally(() => this.measuring.delete(hash))
+    this.measuring.set(hash, measured)
   }
 
-  /** New audio counts against the listener's minutes and towards the document's total */
-  private async charge(userId: string | null, documentId: string | null, voice: ServerVoice, durationMs: number, characters: number, route?: SpeechRoute) {
+  /**
+   * Where a part's text is spoken in its audio, for the player's highlight.
+   * Null when the audio hasn't been measured (it's measured now for next
+   * time), and the player falls back to an even spread.
+   */
+  async anchorsFor(clip: ReadyClip, chunk: DocumentChunk): Promise<TextAnchor[] | null> {
+    if (!clip.blobHash || clip.mimeType !== 'audio/mpeg') return null
+    let measuring = this.measuring.get(clip.blobHash)
+    let pauses: Pause[] | null = null
+    if (!measuring) {
+      const blob = await this.ttsRepository.findBlob(clip.blobHash)
+      pauses = (blob?.pauses as Pause[] | null | undefined) ?? null
+      // Older audio was never measured: do it once, from its file
+      if (!pauses && blob) {
+        this.analyse(clip.blobHash, await storage.get(blob.storageKey), blob.mimeType)
+        measuring = this.measuring.get(clip.blobHash)
+      }
+    }
+    if (!pauses && measuring) pauses = await Promise.race([measuring, sleep(MEASURE_WAIT_MS).then(() => null)])
+    if (!pauses) return null
+    const sentences = (chunk.sentences as unknown as { start: number; end: number }[]) ?? []
+    return textAnchors({ text: chunk.text, sentences, durationMs: clip.durationMs, pauses })
+  }
+
+  /**
+   * New audio counts against the listener's minutes and towards the document's total. `madeMs` is
+   * all the speech made for it (takes that weren't kept too), which is what it cost us.
+   */
+  private async charge(userId: string | null, documentId: string | null, voice: ServerVoice, durationMs: number, characters: number, route?: SpeechRoute, madeMs?: number) {
     if (!this.provider.billable || !userId) return
-    await this.usageService.record(userId, voice, durationMs / 1000, characters, route)
+    await this.usageService.record(userId, voice, durationMs / 1000, characters, route, madeMs ? madeMs / 1000 : undefined)
     if (documentId) await this.ttsRepository.addDocumentSeconds(documentId, Math.round(durationMs / 1000)).catch(() => {})
   }
 
   /** One recording (a whole part or one sentence), shared with everyone and made only if nobody has it yet */
   private async voicePiece(userId: string | null, documentId: string | null, voice: ServerVoice, plan: RenderPlan, characters: number, background: boolean) {
-    const hash = blobHash(this.provider.name, voice, plan)
+    const hash = blobHash(this.provider.name, plan)
     const shared = await this.ttsRepository.findBlob(hash)
     if (shared) return shared
     const estimatedSec = characters / CHARS_PER_SECOND[voice.language]
-    const result = await this.provider.synthesize({ text: plan.input, voice, style: plan.style, background })
+    const result = await this.provider.synthesize(await requestOf(plan, background))
     const durationMs = result.durationMs ?? (await measureMs(result.audio, result.mimeType, estimatedSec))
     const storageKey = `audio/blobs/${hash.slice(0, 2)}/${hash}.${result.extension}`
     await storage.put(storageKey, result.audio, result.mimeType)
     const blob = await this.ttsRepository.saveBlob({ hash, storageKey, mimeType: result.mimeType, durationMs, model: result.model, sizeBytes: result.audio.length })
-    this.analyse(hash, result.audio, result.mimeType)
-    await this.charge(userId, documentId, voice, durationMs, characters, result.route)
+    this.analyse(hash, result.audio, result.mimeType, result.joins)
+    await this.charge(userId, documentId, { ...voice, model: plan.voice.model }, durationMs, characters, result.route, result.madeMs)
     return blob
   }
 
@@ -244,7 +357,7 @@ export class TtsService {
 
     const spliced = plan.sentences.length > 0
     const takes = Object.fromEntries(plan.sentences.map((s) => [s.index, s.take]))
-    const hash = spliced ? spliceHash(this.provider.name, voice, plan) : blobHash(this.provider.name, voice, plan)
+    const hash = spliced ? spliceHash(this.provider.name, plan) : blobHash(this.provider.name, plan)
     const clipFields = { renderKey: plan.key, baseKey: plan.base.key, sentenceTakes: spliced ? takes : undefined, charCount: chunk.text.length }
     const shared = await this.ttsRepository.findBlob(hash)
     if (shared) {
@@ -280,7 +393,7 @@ export class TtsService {
 
     let row: AudioClip
     try {
-      row = await this.ttsRepository.create({ chunkId: chunk.id, voiceId: voice.id, provider: this.provider.name, model: voice.model, ...clipFields })
+      row = await this.ttsRepository.create({ chunkId: chunk.id, voiceId: voice.id, provider: this.provider.name, model: plan.voice.model, ...clipFields })
     } catch (e) {
       if (!isUniqueViolation(e)) throw e
       return this.afterRace(userId, chunk, voice, plan, background, attempt)
@@ -289,21 +402,22 @@ export class TtsService {
     try {
       let audio: Buffer
       let durationMs: number
-      let model = voice.model
+      let model = plan.voice.model
       let mimeType = 'audio/mpeg'
       let extension = 'mp3'
+      let joins: SpeechJoin[] | undefined
       if (spliced) {
         ;({ mp3: audio, durationMs } = await this.splice(userId, chunk, voice, plan, start, background))
       } else {
-        const result = await this.provider.synthesize({ text: plan.input, voice, style: plan.style, background })
-        ;({ audio, model, mimeType, extension } = result)
+        const result = await this.provider.synthesize(await requestOf(plan, background))
+        ;({ audio, model, mimeType, extension, joins } = result)
         durationMs = result.durationMs ?? (await measureMs(result.audio, result.mimeType, estimatedSec))
-        await this.charge(userId, chunk.documentId, voice, durationMs, chunk.text.length, result.route)
+        await this.charge(userId, chunk.documentId, { ...voice, model: plan.voice.model }, durationMs, chunk.text.length, result.route, result.madeMs)
       }
       const storageKey = `audio/blobs/${hash.slice(0, 2)}/${hash}.${extension}`
       await storage.put(storageKey, audio, mimeType)
       await this.ttsRepository.saveBlob({ hash, storageKey, mimeType, durationMs, model, sizeBytes: audio.length })
-      this.analyse(hash, audio, mimeType)
+      this.analyse(hash, audio, mimeType, joins)
 
       const ready = await this.ttsRepository.update(row.id, {
         status: 'READY',
@@ -331,7 +445,7 @@ export class TtsService {
    * A clip whose audio file has gone missing from storage: forget it, and the
    * shared file record, so the next request makes it again instead of failing.
    */
-  async forgetMissing(clip: AudioClip) {
+  async forgetMissing(clip: Pick<AudioClip, 'id' | 'blobHash'>) {
     if (clip.blobHash) await this.ttsRepository.forgetBlob(clip.blobHash)
     else await this.ttsRepository.delete(clip.id)
   }
@@ -357,21 +471,25 @@ export class TtsService {
   ) {
     if (!isServerVoice(voice)) throw phoneVoiceError()
     const plan = planRender(text, expressions, voice, narration, { lexicon })
-    if (this.provider.billable && userId && !(await this.ttsRepository.findBlob(blobHash(this.provider.name, voice, plan)))) {
+    if (this.provider.billable && userId && !(await this.ttsRepository.findBlob(blobHash(this.provider.name, plan)))) {
       await this.usageService.assertAvailable(userId, voice, text.length / CHARS_PER_SECOND[voice.language], text.length)
     }
     return this.voicePiece(userId, null, voice, plan, text.length, false)
   }
 
-  /** One MP3 made of several (same voice and format), cached like any shared audio */
+  /** One MP3 made of several (same voice and format) with a short pause between them, cached like any shared audio */
   async joinMp3(parts: { hash: string; storageKey: string; durationMs: number }[]) {
-    const hash = createHash('sha256').update(JSON.stringify(['join', ...parts.map((p) => p.hash)])).digest('hex')
+    const hash = createHash('sha256').update(JSON.stringify(['join', JOIN_GAP_MS, ...parts.map((p) => p.hash)])).digest('hex')
     const existing = await this.ttsRepository.findBlob(hash)
     if (existing) return existing
-    const audio = Buffer.concat(await Promise.all(parts.map(async (p) => audioFrames(await storage.get(p.storageKey)))))
+    const files = await Promise.all(parts.map(async (p) => audioFrames(await storage.get(p.storageKey))))
+    // Clips are trimmed close to their speech, so the pause between them is added here
+    const rate = files[0] ? mp3SampleRate(files[0]) : null
+    const gap = rate ? audioFrames(pcmToMp3(Buffer.alloc(Math.round((JOIN_GAP_MS / 1000) * rate) * 2), rate)) : Buffer.alloc(0)
+    const audio = Buffer.concat(files.flatMap((file, i) => (i ? [gap, file] : [file])))
     const storageKey = `audio/blobs/${hash.slice(0, 2)}/${hash}.mp3`
     await storage.put(storageKey, audio, 'audio/mpeg')
-    const durationMs = parts.reduce((ms, p) => ms + p.durationMs, 0)
+    const durationMs = normalizeMp3(audio).durationMs
     return this.ttsRepository.saveBlob({ hash, storageKey, mimeType: 'audio/mpeg', durationMs, model: 'joined', sizeBytes: audio.length })
   }
 
@@ -387,10 +505,19 @@ export class TtsService {
     throw new AppError("Couldn't prepare the audio. Try again.", 503, 'AUDIO_UNAVAILABLE')
   }
 
+  private previewPrefix(voice: VoiceDefinition) {
+    return previewPrefix(this.provider.name, voice)
+  }
+
+  /** Removes a voice's samples (a listener's own voice, when it's deleted or recorded again) */
+  async forgetPreviews(voices: VoiceDefinition[]) {
+    await Promise.all(voices.flatMap((voice) => ['mp3', 'wav'].map((ext) => storage.delete(`${this.previewPrefix(voice)}.${ext}`).catch(() => {}))))
+  }
+
   /** Short sample of a voice, cached once for everyone */
   async preview(voice: VoiceDefinition, text: string) {
     if (!isServerVoice(voice)) throw phoneVoiceError()
-    const prefix = `previews/${this.provider.name}/${voice.id}-${`${voice.providerVoice}-${voice.model}`.replace(/[^a-z0-9]+/gi, '_')}`
+    const prefix = this.previewPrefix(voice)
     for (const ext of ['mp3', 'wav']) {
       if (await storage.exists(`${prefix}.${ext}`)) return `${prefix}.${ext}`
     }

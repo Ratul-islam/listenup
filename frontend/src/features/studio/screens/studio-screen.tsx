@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { Avatar, Spinner } from 'heroui-native';
-import { ChevronRight, Ellipsis, Plus, SpellCheck2, Timer } from 'lucide-react-native';
+import { AudioLines, ChevronRight, Ellipsis, FileAudio, Plus, SpellCheck2, Timer } from 'lucide-react-native';
 import { useState } from 'react';
 import { FlatList, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,6 +14,7 @@ import { Text } from '@/components/ui/text';
 import { formatTimeLeft } from '@/features/account/lib/allowance';
 import { useAuthStore } from '@/features/auth/store/auth.store';
 import { DocumentActions } from '@/features/library/components/document-actions';
+import { offersOwnVoice, useOwnVoice } from '@/features/own-voice/hooks';
 import type { DocumentSummary } from '@/features/library/types';
 import { usePlayerStore } from '@/features/player/store/player.store';
 import { usePronunciations } from '@/features/pronunciations/hooks';
@@ -21,8 +22,11 @@ import { useUsage } from '@/features/voices/hooks/use-voices';
 import { initials } from '@/features/voices/voice-catalog';
 import { useTokens } from '@/lib/use-tokens';
 
+import { SocialBanner } from '../components/social-banner';
 import { useScripts } from '../hooks/use-scripts';
 import { formatClock } from '../lib/time';
+
+const GUTTER = 20;
 
 /** Studio: a creator's scripts, turned into voiceovers part by part */
 export default function StudioScreen() {
@@ -32,6 +36,8 @@ export default function StudioScreen() {
   const hasPlayer = usePlayerStore((s) => !!s.documentId);
   const scripts = useScripts();
   const pronunciations = usePronunciations();
+  // Voice translation copies the speaker's voice, so it's offered where Google offers that
+  const ownVoice = useOwnVoice();
   const usage = useUsage();
   const [actionsFor, setActionsFor] = useState<DocumentSummary | null>(null);
   const items = scripts.data?.items ?? [];
@@ -53,6 +59,8 @@ export default function StudioScreen() {
         </Pressable>
       </View>
 
+      <SocialBanner gutter={GUTTER} />
+
       <GlassCard raised onPress={() => router.push('/script/new')} accessibilityLabel="New script" className="flex-row items-center gap-3.5 p-4">
         <IconTile size={48}>
           <Plus size={22} color={t.accent} />
@@ -62,6 +70,18 @@ export default function StudioScreen() {
           <Text variant="caption">Paste it all, however long. It’s split into parts for you.</Text>
         </View>
       </GlassCard>
+
+      {offersOwnVoice(ownVoice.data) ? (
+        <GlassCard onPress={() => router.push('/translate-voice')} accessibilityLabel="Translate a recording" className="flex-row items-center gap-3.5 p-4">
+          <IconTile size={48}>
+            <AudioLines size={22} color={t.accent} />
+          </IconTile>
+          <View className="flex-1 gap-0.5">
+            <Text className="text-[17px] font-semibold">Translate a recording</Text>
+            <Text variant="caption">{`Someone speaking, in another language, in their own voice. ${ownVoice.data.plan}.`}</Text>
+          </View>
+        </GlassCard>
+      ) : null}
 
       <GlassCard onPress={() => router.push('/plans')} accessibilityLabel="Studio time left. See plans" className="gap-3 p-4">
         <View className="flex-row items-center gap-2">
@@ -82,6 +102,12 @@ export default function StudioScreen() {
           value={pronunciations.data?.length ? String(pronunciations.data.length) : undefined}
           onPress={() => router.push('/pronunciations')}
         />
+        <SettingsRow
+          icon={<FileAudio size={19} color={t.foreground} />}
+          label="Your exports"
+          detail="Every MP3 you’ve made, to play or save again"
+          onPress={() => router.push('/exports')}
+        />
       </SettingsSection>
 
       {items.length ? <Text variant="label" className="px-1 pt-1 text-muted">Your scripts</Text> : null}
@@ -93,7 +119,7 @@ export default function StudioScreen() {
       <FlatList
         data={items}
         keyExtractor={(d) => d.id}
-        contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + (hasPlayer ? 190 : 120), gap: 10 }}
+        contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + (hasPlayer ? 190 : 120), gap: 10 }}
         ListHeaderComponent={header}
         renderItem={({ item }) => <ScriptRow script={item} onMore={setActionsFor} />}
         ListEmptyComponent={
@@ -119,14 +145,23 @@ function ScriptRow({ script, onMore }: { script: DocumentSummary; onMore: (d: Do
   const t = useTokens();
   const preparing = script.status === 'PENDING' || script.status === 'PROCESSING';
   const failed = script.status === 'FAILED';
-  const detail = preparing
+  const translating = script.voiceTranslation?.status === 'listening';
+  const detail = translating
+    ? 'Writing down and translating…'
+    : preparing
     ? 'Splitting into parts…'
     : failed
       ? (script.error ?? 'Couldn’t read this script')
       : `${script.chunkCount === 1 ? '1 part' : `${script.chunkCount} parts`}, ${sinceLabel(script.editedAt ?? script.updatedAt)}`;
   return (
     <GlassCard
-      onPress={() => (script.status === 'READY' ? router.push({ pathname: '/script/[id]', params: { id: script.id } }) : onMore(script))}
+      onPress={() =>
+        script.status === 'READY'
+          ? router.push({ pathname: '/script/[id]', params: { id: script.id } })
+          : script.voiceTranslation
+            ? router.push({ pathname: '/translation/[id]', params: { id: script.id } })
+            : onMore(script)
+      }
       accessibilityLabel={`${script.title}, ${formatClock(script.estimatedDurationSec)} long, ${detail}`}
       className="flex-row items-center gap-3.5 p-4"
     >

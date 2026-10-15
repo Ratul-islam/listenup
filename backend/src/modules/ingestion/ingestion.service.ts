@@ -1,12 +1,14 @@
 import { MAX_DOCUMENT_CHARS } from '../../config/constants.js'
+import { partDelivery, readStudio } from '../studio/studio-catalog.js'
 import type { Document } from '../../generated/prisma/client.js'
 import { storage } from '../../lib/storage/storage.js'
 import { AppError } from '../../utils/AppError.js'
+import { catalogText, isCatalogKey } from '../catalog/catalog.service.js'
 import type { DocumentsRepository } from '../documents/documents.repository.js'
-import { extractDocx } from './extractors/docx.extractor.js'
-import { extractEpub } from './extractors/epub.extractor.js'
+import type { UsageService } from '../usage/usage.service.js'
+import { extractArchive } from './extractors/archive.js'
 import { ocrImage, ocrPdf } from './extractors/ocr.extractor.js'
-import { extractPdf } from './extractors/pdf.extractor.js'
+import { extractPdfIsolated, pdfPageCountIsolated, splitPdfIsolated } from './extractors/pdf-process.js'
 import { extractPlainText } from './extractors/text.extractor.js'
 import type { Extracted } from './extractors/types.js'
 import { extractWeb } from './extractors/web.extractor.js'
@@ -21,27 +23,41 @@ const isTransient = (e: unknown) =>
 
 /** Turns an imported source (file, link or pasted text) into speech-ready chunks */
 export class IngestionService {
-  constructor(private readonly documentsRepository: DocumentsRepository) {}
+  constructor(
+    private readonly documentsRepository: DocumentsRepository,
+    private readonly usageService: UsageService,
+  ) {}
 
   private async extract(doc: Document, forceOcr: boolean): Promise<{ extracted: Extracted; usedOcr: boolean }> {
-    // A translation keeps its original's kind (for the shelf) but its text is plain
-    if (doc.translatedFromId) return { extracted: extractPlainText(await storage.get(doc.fileKey!), false), usedOcr: false }
+    // A translation or a free classic keeps a shelf kind (a book) but its text is plain.
+    // A classic's text is shared, and fetched from where it's published the first time.
+    if (doc.translatedFromId || (doc.kind !== 'TEXT' && doc.mimeType === 'text/plain')) {
+      const file = isCatalogKey(doc.fileKey) ? await catalogText(doc.fileKey) : await storage.get(doc.fileKey!)
+      return { extracted: extractPlainText(file, false), usedOcr: false }
+    }
     if (doc.kind === 'WEB') return { extracted: await extractWeb(doc.sourceUrl!), usedOcr: false }
 
     const file = await storage.get(doc.fileKey!)
     switch (doc.kind) {
       case 'PDF': {
-        const text = forceOcr ? { paragraphs: [], needsOcr: true } : await extractPdf(file)
+        const text = forceOcr ? { paragraphs: [], needsOcr: true } : await extractPdfIsolated(file)
         if (!text.needsOcr) return { extracted: text, usedOcr: false }
-        const ocr = await ocrPdf(file)
+        // Free reads a few hundred pages a month with OCR; a file that doesn't fit isn't started
+        const pages = await pdfPageCountIsolated(file)
+        await this.usageService.assertOcrPages(doc.userId, pages)
+        const ocr = await ocrPdf(await splitPdfIsolated(file), doc.userId)
+        await this.usageService.recordOcrPages(doc.userId, pages)
         return { extracted: { ...text, paragraphs: ocr.paragraphs, needsOcr: false }, usedOcr: true }
       }
-      case 'IMAGE':
-        return { extracted: await ocrImage(file, doc.mimeType ?? 'image/jpeg'), usedOcr: true }
+      case 'IMAGE': {
+        await this.usageService.assertOcrPages(doc.userId, 1)
+        const extracted = await ocrImage(file, doc.mimeType ?? 'image/jpeg', doc.userId)
+        await this.usageService.recordOcrPages(doc.userId, 1)
+        return { extracted, usedOcr: true }
+      }
       case 'DOCX':
-        return { extracted: await extractDocx(file), usedOcr: false }
       case 'EPUB':
-        return { extracted: await extractEpub(file), usedOcr: false }
+        return { extracted: await extractArchive(doc.kind, file), usedOcr: false }
       case 'MARKDOWN':
         return { extracted: extractPlainText(file, true), usedOcr: false }
       case 'TEXT':
@@ -87,7 +103,7 @@ export class IngestionService {
         chunkCount: chunks.length,
         estimatedDurationSec: Math.round(chunks.reduce((s, c) => s + c.estimatedDurationSec, 0)),
         usedOcr,
-      })
+      }, partDelivery(readStudio(doc.studio)))
     } catch (e) {
       if (!finalAttempt && isTransient(e)) {
         await this.documentsRepository.update(doc.id, { status: 'PENDING' })

@@ -6,6 +6,11 @@ import type { ExportsService } from './exports.service.js'
 export class ExportsController {
   constructor(private readonly exportsService: ExportsService) {}
 
+  list = async (request: FastifyRequest, reply: FastifyReply) => {
+    const items = await this.exportsService.list(request.user.sub)
+    return sendSuccess(reply, { data: { items } })
+  }
+
   status = async (request: FastifyRequest<{ Params: ExportParams; Querystring: ExportBody }>, reply: FastifyReply) => {
     const data = await this.exportsService.status(request.user.sub, request.params.documentId, request.query.voiceId)
     return sendSuccess(reply, { data: { export: data } })

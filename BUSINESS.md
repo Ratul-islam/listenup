@@ -2,7 +2,7 @@
 
 The single record of how ListenUp makes money and why: positioning, prices, limits, costs, payments, policies, and which decisions are still open.
 
-- **Last updated:** 7 October 2026
+- **Last updated:** 13 October 2026
 - **Owner:** Ratul Islam
 - **Build status:** see [ROADMAP.md](ROADMAP.md)
 - **Change log:** see [CHANGES.md](CHANGES.md)
@@ -69,6 +69,8 @@ Three voice levels ✅ Decided. Costs include OpenRouter's 5.5% fee. Prices are 
 | Natural, from the server | Kokoro (`hexgrad/kokoro-82m`) on OpenRouter | ~$0.03 | Phones without the download, slow phones, Japanese voices, MP3 exports, the podcast feed and voice notes. Good English and several other languages. No emotions, no Bangla. |
 | Expressive | Gemini 3.8 Flash-Lite TTS, until 31 Dec 2026 | ~$0.58 | Emotions, HD Bangla, Urdu, Indonesian |
 | Expressive | Gemini 3.8 Flash-Lite TTS, from 1 Jan 2027 | ~$1.16 | **Google doubles every Gemini TTS rate.** All margins below use this price. |
+| Your own voice (Pro) | The same model, with a voice made from the listener's recording | Same as Expressive | ✅ Decided 11 Oct 2026. Counted as Expressive minutes. Made by Google directly only, so it needs `GEMINI_API_KEY`. |
+| Expressive, for Bangla or Hindi typed in English letters | Gemini 3.8 Flash TTS (the larger model) | ~$0.87, and ~$1.74 from 1 Jan 2027 | ❓ On since 13 Oct 2026, yours to confirm. 1.5 times the usual model. It kept a Bangladeshi accent on lines mixed with English in 13 of 16 takes, against 8 of 16. Counted as ordinary Expressive minutes. `TTS_MODEL_TYPED` turns it off. |
 
 - One hour of audio is about 52,000 English or 43,000 Bangla characters.
 - Listening at 1.5× doesn't change the cost. Replaying cached audio is free.
@@ -95,17 +97,21 @@ Three voice levels ✅ Decided. Costs include OpenRouter's 5.5% fee. Prices are 
 | Natural voices made on the phone | Unlimited | Unlimited | Unlimited |
 | Natural voices from the server | 60 min a month | 40 h a month (reduced: 20 h) | 60 h a month (reduced: 40 h) |
 | Expressive voices | 5 min, once (trial) | 90 min a month (reduced: 30 min) | 4 h a month (reduced: 90 min) |
-| Translation | 30k characters a month | 1M characters a month | 3M characters a month |
+| Translation | 30k characters a month | 1M characters a month (reduced: 250k) | 3M characters a month (reduced: 750k) |
+| Reading scans and photos (OCR) | 200 pages a month | No cap | No cap |
+| Daily digest | 8 a month | Every day | Every day |
 | MP3 export and offline downloads | — | ✓ | ✓ |
 | Private podcast feed | — | ✓ (moved from Pro on 5 Oct) | ✓ |
 | Summaries and quizzes | — | ✓ | ✓ |
-| Make it expressive (AI directs the story: style, strength, characters) | — | ✓ (Gemini 3.5 Flash-Lite) | ✓ (Gemini 3.8 Flash, a smarter director) |
-| Add emotions yourself (mood bar, select text, paint, say it in your own words) | ✓ | ✓ | ✓ |
+| Make it expressive (AI directs the story: style, strength, and each character in their own voice) | — | ✓ (Gemini 3.5 Flash-Lite) | ✓ (Gemini 3.8 Flash, a smarter director) |
+| Add emotions yourself (mood bar, select text, paint, say it in your own words, or say the line yourself and the voice follows) | ✓ | ✓ | ✓ |
 | Voice notes | ✓, ends with "Made with ListenUp" | ✓ | ✓ |
 | Ads | Shelf banner, plus rewarded ads | None | None |
-| Voice cloning | — | — | ❓ Not built (see section 11) |
+| Your own voice (made from a recording of you) | — | — | ✓ (11 Oct). Not in the UK, the EEA, Switzerland, India, Illinois or Texas |
 
-- **Reduced allowances** apply to subscriptions bought in lower-price countries: BD, IN, PK, NP, LK, ID, PH, VN, NG, EG and KE. They're based on the user's Play country.
+- **Reduced allowances** apply to subscriptions bought in lower-price countries: BD, IN, PK, NP, LK, ID, PH, VN, NG, EG and KE. They're based on the user's Play country. Translation is reduced too (9 October 2026).
+- **Before buying,** the Plans screen uses the phone's time zone in place of the Play country, so a listener in Bangladesh sees what ৳149 buys there.
+- **AI text features count in the daily spending caps** (9 October 2026), alongside voices: reading scans, translation, digests, summaries, Make it expressive, and the community check.
 - **Monthly allowances** reset on the 1st of each month. Free's Expressive minutes are a one-time trial.
 - **Play product IDs:**
   - subscriptions `plus` and `pro`, each with base plans `monthly` and `yearly`
@@ -153,6 +159,7 @@ The first plans (Plus ৳299 and Pro ৳799, almost all on Gemini) lost money:
 
 - **Daily spending caps:**
   - `FREE_DAILY_SPEND_CAP_USD` (default $2) covers all free users together.
+  - `FREE_USER_DAILY_SPEND_USD` (default $0.25, 15 October 2026) is one Free account's share of that a day, so one account can't pause free audio and AI for everyone. A Free user's heaviest real day (a month's minutes, OCR and translation at once) is about $0.30; a usual day is a few cents.
   - `DAILY_SPEND_CAP_USD` (default $25) covers everyone.
   - When a cap is hit, new audio pauses (`BUDGET_PAUSED`) and the app switches to phone voices.
 - **Automatic fallback:** if minutes run out or the voice service fails, the phone voice takes over and playback continues.
@@ -161,6 +168,14 @@ The first plans (Plus ৳299 and Pro ৳799, almost all on Gemini) lost money:
   - After 3 failures in a row, Kokoro is paused for 30 seconds.
 - **Smaller files:** MP3s at 40 kbps (about 37% smaller). Unused audio is deleted daily.
 - **New audio counts against the allowance:** MP3 exports, podcast episodes, downloads and every regenerated take all count.
+- **Second takes for feelings are our cost** (13 October 2026). A voice follows a feeling in about half its takes, so the server measures the take and makes another when it missed:
+  - Whisper: up to 3 takes. Angry, shouted, sad and frightened: up to 3 for a feeling the listener set, up to 2 for one the AI suggested.
+  - The listener is charged for the audio they get, not for takes that weren't kept.
+  - A part where half the lines have such a feeling made 1.2 to 1.4 times the speech it kept. Parts without them cost the same as before.
+  - The daily spending caps count every take since this date; before, they counted only the one kept.
+- **A recorded line ("Say it yourself") is three takes** (13 October 2026). The closest to the listener's performance is shaped to it; the other two are our cost. The listener is charged for one. The recording isn't kept; measurements of how the line was said are, with the document's files, and go when the document or the account does.
+- **No AI listening check** ✅ Decided against, 13 October 2026. An audio model listening to every marked line would cost 3 to 4 times the voice price of those lines (not the 1.8 times first estimated), and it couldn't tell a feeling from the words: it passed a plainly read sad sentence as sad 9 times in 12.
+- **No Bangla-script step for Banglish** ✅ Decided against, 13 October 2026. Typed Bangla is already pronounced right (1.0% of letters wrong, against 1.2% in Bangla script), and the accent on lines mixed with English didn't improve (10 of 24 takes, against 12 of 24 typed). The larger voice model is what helped.
 
 ---
 
@@ -169,7 +184,8 @@ The first plans (Plus ৳299 and Pro ৳799, almost all on Gemini) lost money:
 ### Ads (Free only)
 
 - One small banner on the shelf, after the third item, with "No ads with Plus".
-- A rewarded ad gives **10 Natural minutes**, at most **3 a day**. Never Expressive minutes.
+- A rewarded ad gives **10 Natural minutes**, or **3 in reduced-price countries** (9 October 2026; there, a view earns about $0.00035 while 10 minutes cost up to $0.0057). At most **3 a day**. Never Expressive minutes.
+- Free users have no Play country, so the phone's time zone places them (`Asia/Dhaka` → Bangladesh). Unknown counts as standard.
 - Google's consent form appears where the law needs it (EU, UK). "Ad privacy choices" is in Studio.
 - Rewards are verified by AdMob's signed server-side callback once `ADMOB_SSV=true`.
 - What one ad view earns:
@@ -182,17 +198,36 @@ The first plans (Plus ৳299 and Pro ৳799, almost all on Gemini) lost money:
 
 ### Invite a friend
 
-- Both people get **10 Expressive minutes**.
+- Both people get **10 Expressive minutes**, or **5** for a person in a reduced-price country (9 October 2026). Each person's own region decides theirs.
 - The reward is given once the friend has confirmed their email and listened for **5 minutes**.
 - Each person is rewarded for at most **10 invites**.
 - Codes can be entered for **14 days** after signing up. A Play link carries the code through the install referrer.
 - Own codes and circular invites are refused.
+- **One account per inbox** (15 October 2026): another spelling of an email that has an account (a Gmail dot, a "+tag", googlemail.com) makes no new account, and older accounts that share an inbox can't use each other's codes. Listening counts no faster than the clock, so the 5 minutes can't be faked by repeating one report.
 - **Cost:** at most about 39 cents per pair at 2027 prices (20 Expressive minutes), and about 19 cents today.
 
 ### Viral loops
 
 - **Voice notes** on Free end with a spoken "Made with ListenUp".
 - **Share to ListenUp** brings content in from any app.
+- **Explore: free classics** ✅ Decided (8 October 2026). A hand-picked shelf of out-of-copyright stories and books in Bangla and English (Tagore, Sarat Chandra, Bankim, Sukumar Ray, Poe, Austen, Conan Doyle…). New users have something to hear before importing anything. Popular titles are cheap: everyone who adds one gets the same text, so its audio is made once per voice and shared.
+- **Explore Community and the monthly writing contest** ✅ Decided and built (8 October 2026).
+  - **What it is:** listeners publish their own writing, voiced the way they set it up (voice, emotions, pronunciations), and short AI voice clips (a line or paragraph, including credited lines from the classics). Others listen for free and heart them. Every published piece is a reason to share the app.
+  - **The contest:**
+    - One entry per writer a month.
+    - Boards for Bangla, English and other languages.
+    - The top 3 on each board win **60 / 30 / 15 Expressive minutes**. They never expire and have no cash value.
+    - A heart counts only if the listener heard the piece (half of it, or 2 minutes), and their account has a confirmed email and is at least 7 days old.
+    - Accounts on one inbox count as one heart together, and never for the writer's own inbox (15 October 2026).
+    - A winner needs 3 hearts that count.
+    - Prizes are paid a day after the month ends, so last-minute reports can be reviewed first.
+    - You can set a theme each month.
+  - **Cost:**
+    - Prizes: at most 315 Expressive minutes a month (3 boards × 105). That's about $3 now and $6 at 2027 prices, and only when the minutes are used.
+    - Voicing: the writer pays for any parts not yet voiced, from their own minutes, once. Listeners reuse that audio, so listening costs nothing.
+    - The AI check costs about $0.001 per writing. A cover picture is looked at in the same check, for a small fraction of a cent more.
+  - **Cover pictures** ✅ Decided (12 October 2026): writers add their own when they publish (optional). Titles without one, and the classics, keep the drawn cover. AI-painted covers were offered (about 4 cents a title) and not chosen.
+  - **Limits:** 30,000 characters per writing, 5 writings and 10 clips a day per person.
 
 ---
 
@@ -318,10 +353,23 @@ A Vercel API plus a separate worker is still possible with the same image, but i
 - **Account closure** ✅: a 30-day grace period. Signing in within 30 days restores the account; after that a scheduled job erases it. Play requires deletion inside the app.
 - **Terms and Privacy** ✅: drafted in the app, in one editable file. They cover ads (AdMob, advertising ID, consent), invites and the podcast link. **They need a legal review before release.**
 - **Commercial use** 🟡: add one clear sentence to the Terms granting creators commercial use of exported audio.
-- **Voice cloning policy** ✅ (if built): your own voice only, recorded in the app while reading an on-screen script that includes a consent line. Private to the account and deletable. Ban impersonation in the Terms.
+- **Your own voice** ✅ (built 11 October 2026):
+  - Your own voice only, recorded in the app: a passage, then Google's consent sentence, which Google checks is said by the same person. Adults only.
+  - Private to the account: it can't be published in Explore or given to a character. It can be exported, since voiceovers are the point.
+  - Not offered where Google doesn't offer it: the UK, the EEA, Switzerland, India, Illinois and Texas.
+  - One voice per account, 5 recordings a month. When Pro ends it's kept and locked, not deleted.
+  - Deletable at any time: the voice at Google, the two recordings, and the audio kept in it.
+  - The Terms and Privacy pages cover it. **For the legal review:** a voice recording may count as biometric data in some countries.
 - **AI labels** 🟡: a line on the export screen reminding creators to use the platform's AI label.
 - **On-device voice licence** ❓: Kokoro and sherpa-onnx are Apache 2.0, but sherpa-onnx includes espeak-ng (GPL-3.0) to turn text into sounds. Have this checked before release. The app may need to show the licences, or a lawyer may advise another route.
 - **Private podcast** ✅: the secret link is the only protection, and it can be replaced at any time. The feed is kept out of podcast directories.
+- **Explore Community (user content)** ✅ (8 October 2026). There's a Community rules page in the app, and the Terms and Privacy pages cover it.
+  - Moderation: an AI check of the text, and of the cover picture if there is one, before anything is published. A cover that breaks the rules is dropped and the writing goes out with a drawn cover. Report (7 reasons; 3 reports hide a piece until it's reviewed) and Block writer. The ListenUp team reviews in the app, for accounts in `ADMIN_EMAILS`, and sees the cover there.
+  - Cover pictures (12 October 2026) are cut to a cover's shape and saved again as a new file, which drops what a phone adds to photos (place, time, camera). They are deleted when the writing is unpublished or the account is erased.
+  - Writers: own work only, with an "I wrote this myself" tick. Unpublishing removes a piece from every listener's shelf. Listeners can't export, translate or republish someone else's writing.
+  - **Before release:** declare user-generated content in Play Console, update the Data safety form (it now also has to list photos: cover pictures are collected and shown to other users), and include the Community rules in the legal review.
+- **Voice profile pictures** ✅ Decided (12 October 2026): drawn faces, not photos or AI portraits. They are Lorelei by Lisa Wischofsky, released as CC0 1.0 (public domain), so there is nothing to pay or credit. AI-painted portraits were offered (about $2 for all 46) and not chosen.
+- **Explore's classics** ✅: only works in the public domain in Bangladesh, India and the US (authors who died over 60 years ago, and works published before 1930). **Nazrul is not** (he died in 1976; protected until 2037). Texts come from Project Gutenberg (licence header and trademark removed) and Wikisource, credited with a link.
 
 ---
 
@@ -338,7 +386,7 @@ At 2027 Gemini prices, confirmed again on 7 October: Flash-Lite TTS goes from $6
 - **Losses on individual users** stay as in section 3: heavy yearly users, and heavy users in reduced-price countries, especially creators there who use all their Expressive minutes.
 - **What was changed on 7 October to make money instead of losing it** ✅:
   1. **Free Expressive trial cut from 15 to 5 minutes.** At most about $0.10 per new user in 2027.
-  2. **Google directly, with the half-price flex tier for MP3 exports, offline downloads and podcast episodes.** It skips OpenRouter's 5.5% everywhere. It needs `GEMINI_API_KEY` from a paid Google AI Studio account; without it, everything keeps going through OpenRouter.
+  2. **Google directly, with the half-price flex tier for MP3 exports, offline downloads and podcast episodes.** It skips OpenRouter's 5.5% everywhere. It needs `GEMINI_API_KEY` from a paid Google AI Studio account; without it, everything keeps going through OpenRouter. **14 Oct 2026:** the key is set, but a new paid project (Tier 1) gets 10 speech requests a minute and 100 a day per model, so almost all speech still goes through OpenRouter. The savings arrive at Tier 2 ($100 paid and 3 days after the first payment), and "Your own voice" (Google only) shouldn't be offered to users before then. **Later the same day:** Expressive voices now go through Vertex AI first, billed to the Cloud project and its ~$300 of credits (about 550 hours of audio at today's price, 270 after the 2027 doubling), at Google's price and without the 100-a-day limit. Once the credits are used, Vertex is cash at the same price as the key.
   3. **Yearly prices at about 10 months:** Plus $39.99 / ৳1,490, Pro $89.99 / ৳3,990. Set them in Play Console.
 - **Result (same model, 2027 prices, Bangla-first mix, 2% of users paying):**
 
@@ -350,20 +398,28 @@ At 2027 Gemini prices, confirmed again on 7 October: Flash-Lite TTS goes from $6
 | Monthly profit at 20,000 users | −$717 | about +$170 |
 
 - **To grow beyond that:** Studio packs (52–77% margin), users outside Bangladesh (about 3× more per user), and a bKash checkout on the web.
+- **Leaks closed on 9 October** (your answer to "is the price okay?": yes per paying user, but a few features could cost more than a user pays):
+  - translation reduced in reduced-price countries (the −115% case is gone)
+  - AI text counted in the daily caps
+  - Free capped at 200 scanned pages and 8 digests a month
+  - ads and invites smaller in reduced-price countries
+- **Still open:** global Plus at $4.99 instead of $3.99. It's optional, and would raise the heavy-user margin from 9% to about 27%.
 
 ## 11. Open decisions and things on hold
 
 | Item | Status | Notes |
 |---|---|---|
-| Voice cloning for Pro | ❓ Open | In the original plan, not built, and the Plans screen doesn't promise it |
+| Your own voice for Pro | ✅ Built 11 Oct 2026 | Untested against Google (no key yet). Open: how it sounds in Bangla, and whether Google's region limits apply to apps on its API |
+| Creator edges: 13 ideas in 7 phases ([CREATOR-EDGES.md](CREATOR-EDGES.md)) | 🟡 Proposed (9 Oct 2026) | Nine decisions are listed at the end. **Found:** Studio packs never expire, but MP3 export needs Plus or Pro, so "no subscription needed" isn't true yet |
 | bKash checkout on the web | ❓ Open | Decide after the creator beta (section 7) |
 | Launch kit (Phase 7): store listing in six languages, keywords, screenshots, launch countries, launch-week calendar | ⏸ On hold | |
+| Community: writer pages, updating a published writing without losing its hearts, a push notification for wins and published posts | 🟡 Proposed | Built without them on 8 October 2026 |
 | Statistics and owner dashboard | ⏸ On hold | Spend is already recorded per day and per model (`SpendDay`) |
 | Auto-add new documents to the podcast | ❓ Open | Would spend users' minutes without asking |
 | Indian English voices with emotions | ❓ Open | They stay on Kokoro for now |
 | Natural voices on the phone | ✅ Built 7 Oct 2026 | Needs testing on real phones, including a budget one, and a licence check |
 | Run Kokoro on your own server | 🟡 Later | Now only a backup for phones that can't run it; OpenRouter until then |
-| Call Google directly, with Batch/Flex for downloads and exports | 🟡 Proposed | Saves 5.5%, and half price for audio nobody is waiting on |
+| Call Google directly, with Batch/Flex for downloads and exports | ✅ Built; key set 14 Oct 2026; Vertex AI first since the same day | Saves 5.5%, and half price for audio nobody is waiting on. The key's flex only at Tier 2 (Tier 1: 100 speech requests a day); Vertex has no such limit and runs on the Cloud credits |
 | Student or family plan | 🟡 Proposed | Raises the share of users who pay in South Asia |
 | Exam pack (spaced-repetition flashcards from quizzes) | 🟡 Proposed | A strong reason for students to buy Plus |
 | Send to ListenUp by email | 🟡 Proposed | A daily habit, and it feeds the digest |
@@ -379,7 +435,8 @@ At 2027 Gemini prices, confirmed again on 7 October: Flash-Lite TTS goes from $6
 - **Payments in Bangladesh** (section 6).
 - **Free is good enough for many:** built-in readers for listeners, CapCut for creators.
 - **Bigger players are moving in:** ElevenLabs v3 speaks Bengali, and VoisLabs targets Bangla creators.
-- **Misuse:** scams and fake political audio. Keep cloning off or tightly limited, keep logs of who voiced what, and remove abusers.
+- **Misuse:** scams and fake political audio. Your own voice is limited to the account that recorded it, needs a spoken consent that Google checks, and can't be published in Explore. Keep logs of who voiced what, and remove abusers.
+- **Your own voice depends on Google alone.** No other provider can make it, Google holds 200 voices per project, and it isn't offered in the UK, the EEA, Switzerland or India, where much of the Bengali diaspora lives. If its Bangla isn't good enough, the backup (Cartesia) costs 2 to 3 times as much.
 - **Platform labels:** Meta can cut reach for undisclosed AI audio, and YouTube demonetizes templated channels.
 
 ---
@@ -393,3 +450,18 @@ After launch, decide from these numbers, not guesses:
 - **Voice cost per paying user**, compared with what they pay after Google's 15%.
 - **Users still active after 30 days.**
 - **For creators:** minutes used per creator, how many bought after free minutes, and how many bought again.
+
+## Creator features and voice translation (decided 14 October 2026)
+
+- **Pitch, speed and tone are set per script and baked into the audio**, so MP3 exports and the podcast carry them (the user's choice over a playback-only setting). Speed 0.75× to 1.25×, pitch ±4 semitones; tone is a direction, so it works on Expressive voices only. Changing them re-voices the script's parts, at the listener's minutes.
+- **A platform for each script** (YouTube, Shorts, TikTok, Reels, Facebook, podcast, audiobook) sets the kind of narration, a length guide, the export's loudness and subtitles, and a starter template. Platform loudness is the honest version of "sounds right without knowing what LUFS is" from CREATOR-EDGES.md idea 13.
+- **Voice translation is Pro**, alongside "Your voice": a recording (one speaker, up to 10 minutes) is written down, translated and read in a copy of the speaker's voice, made only after the speaker reads Google's consent sentence in person. 20 a month per person. The Terms make a written exception to "record only your own voice" for it.
+- **Speakers' voices are Google's 7-day stateless voices,** not stored ones, so they don't use the project's 200 stored voices; they're renewed from the kept recordings when used again.
+- **Limit to know:** own and speaker voices are spoken only through the Gemini API key (100 speech requests a day on Tier 1). Until Tier 2 (or Vertex proves it can speak them), they can't carry real use.
+
+## Platform pages in Studio (decided 15 October 2026)
+
+- **A page each for TikTok, Reels with Facebook, and YouTube Shorts with YouTube** (the user's choice: cards inside Studio, not a new tab). Each has narration styles native to the platform, the post writer (caption, hashtags, title, tags) and subtitles in the platform's style, including a new word-by-word style.
+- **The post writer is on every plan:** about $0.0005 a post in English and $0.002 in other languages, which use the stronger model because the small one misspelt Bangla. A reason to come back each time a video goes up, at almost no cost. Subtitles still need the MP3, so they stay Plus and Pro.
+- Not chosen this time, and still open: an AI script writer from a topic, a video maker (MP4 with captions over a background), and a series splitter.
+

@@ -45,10 +45,10 @@ export class TtsRepository {
 
   /** Shared files no clip plays any more, older than `before` */
   orphanBlobs(before: Date, take: number) {
-    return this.db.audioBlob.findMany({ where: { clips: { none: {} }, createdAt: { lt: before } }, take, select: { hash: true, storageKey: true } })
+    return this.db.audioBlob.findMany({ where: { clips: { none: {} }, publications: { none: {} }, createdAt: { lt: before } }, take, select: { hash: true, storageKey: true } })
   }
 
   deleteBlob(hash: string) {
-    return this.db.audioBlob.deleteMany({ where: { hash, clips: { none: {} } } })
+    return this.db.audioBlob.deleteMany({ where: { hash, clips: { none: {} }, publications: { none: {} } } })
   }
 }

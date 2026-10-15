@@ -1,10 +1,11 @@
 import { router } from 'expo-router';
-import { Info, Sparkles } from 'lucide-react-native';
+import { Sparkles } from 'lucide-react-native';
 import { useState } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { ActionSheet } from '@/components/ui/action-sheet';
 import { PrimaryButton } from '@/components/ui/primary-button';
+import { Segmented } from '@/components/ui/segmented';
 import { Text } from '@/components/ui/text';
 import { usePlayerStore } from '@/features/player/store/player.store';
 import { useUsage } from '@/features/voices/hooks/use-voices';
@@ -12,7 +13,8 @@ import { useTokens } from '@/lib/use-tokens';
 
 import { NARRATION_STRENGTHS, NARRATION_STYLES, narrationStyleMeta, type NarrationStrength, type NarrationStyleId } from '../catalog';
 import { useAutoExpression } from '../hooks/use-auto-expression';
-import { Chip, Segmented } from './controls';
+import { useExpressiveSwitch } from '../hooks/use-expressive-switch';
+import { Chip } from './controls';
 
 /**
  * "Make it expressive": pick the story's style (or let AI detect it) and how
@@ -30,10 +32,8 @@ function Body({ onClose }: { onClose: () => void }) {
   const t = useTokens();
   const auto = useAutoExpression();
   const narration = usePlayerStore((s) => s.document?.narration);
-  const expressive = usePlayerStore((s) => {
-    const chunk = s.chunks[s.chunkIndex];
-    return chunk ? s.expressive[chunk.language] : true;
-  });
+  // A Natural or Phone voice can't play the style: offer the Expressive voice that can, in the same tap
+  const { plain, current, suggestion, switching, switchNow } = useExpressiveSwitch();
   const plan = useUsage().data?.plan.id;
   const [style, setStyle] = useState<NarrationStyleId | 'auto'>(narration?.style ?? 'auto');
   const [strength, setStrength] = useState<NarrationStrength>(narration?.strength ?? 'balanced');
@@ -60,13 +60,14 @@ function Body({ onClose }: { onClose: () => void }) {
   }
 
   const detected = style === 'auto' && narration?.style === 'auto' && narration.detected ? narrationStyleMeta[narration.detected] : null;
-  const go = async () => {
+  const go = async (withVoice = false) => {
+    if (withVoice) await switchNow();
     if (await auto.start({ style, strength })) onClose();
   };
 
   return (
     <View className="gap-5">
-      <Text variant="lead">AI reads the story, finds its mood and characters, and directs every line. Your own emotions stay as they are.</Text>
+      <Text variant="lead">AI reads the story, finds its mood, directs the lines, and gives each character their own voice. Your own emotions stay as they are.</Text>
 
       <View className="gap-2">
         <Text variant="label" className="text-muted">Style</Text>
@@ -84,23 +85,26 @@ function Body({ onClose }: { onClose: () => void }) {
         <Segmented options={NARRATION_STRENGTHS} value={strength} onChange={setStrength} />
       </View>
 
-      {!expressive ? (
-        <View className="flex-row gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3.5 py-3">
-          <Info size={18} color="#d97706" style={{ marginTop: 1 }} />
-          <Text className="flex-1 text-[14px] leading-[20px] text-amber-700 dark:text-amber-300">
-            Your current voice reads without emotions. Switch to an HD voice, like Nova or Atlas, to hear the style.
-          </Text>
-        </View>
+      {plain ? (
+        <Text variant="caption" className="rounded-2xl bg-accent-soft-bg px-3.5 py-2.5 text-accent-soft-fg">
+          {current?.name ?? 'This voice'} reads without emotions, so the style wouldn’t be heard.
+          {suggestion ? ` ${suggestion.name} is the closest voice that acts them out.` : ' Choose an Expressive voice to hear it.'}
+        </Text>
       ) : null}
 
       <View className="gap-2">
         <PrimaryButton
-          label={auto.running ? 'Directing…' : narration?.style ? 'Direct again' : 'Make it expressive'}
+          label={auto.running ? 'Directing…' : plain && suggestion ? `Use ${suggestion.name} and make it expressive` : narration?.style ? 'Direct again' : 'Make it expressive'}
           icon={<Sparkles size={18} color={t.accentForeground} />}
-          isLoading={auto.busy}
+          isLoading={auto.busy || switching}
           isDisabled={auto.running}
-          onPress={() => void go()}
+          onPress={() => void go(plain && !!suggestion)}
         />
+        {plain && suggestion ? (
+          <Pressable onPress={() => void go()} disabled={auto.busy || auto.running} accessibilityRole="button" className="items-center rounded-full py-2 active:opacity-60">
+            <Text className="text-[14px] font-semibold text-muted">Keep {current?.name ?? 'this voice'} and save the directions for later</Text>
+          </Pressable>
+        ) : null}
         {narration?.style ? (
           <Pressable
             onPress={() => void auto.setNarration({ style: null, strength }).then((ok) => ok && onClose())}
@@ -111,7 +115,7 @@ function Body({ onClose }: { onClose: () => void }) {
             <Text className="text-[14px] font-semibold text-muted">Turn the style off</Text>
           </Pressable>
         ) : null}
-        <Text variant="caption" className="text-center">Directs as far as your HD minutes reach, from where you are.</Text>
+        <Text variant="caption" className="text-center">Directs as far as your Expressive minutes reach, from where you are.</Text>
       </View>
     </View>
   );

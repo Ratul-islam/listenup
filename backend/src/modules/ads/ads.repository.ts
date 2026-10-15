@@ -4,7 +4,7 @@ export class AdsRepository {
   constructor(private readonly db: PrismaClient) {}
 
   findUser(userId: string) {
-    return this.db.user.findUnique({ where: { id: userId }, select: { id: true, plan: true, closedAt: true } })
+    return this.db.user.findUnique({ where: { id: userId }, select: { id: true, plan: true, closedAt: true, billingCountry: true, timeZone: true } })
   }
 
   rewardsOn(userId: string, day: string) {

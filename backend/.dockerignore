@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+vertex-key.json
+*-key.json
 node_modules
 dist
 src/generated

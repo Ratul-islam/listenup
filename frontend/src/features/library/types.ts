@@ -1,3 +1,4 @@
+import type { StudioView } from '@/features/studio/api/studio.api';
 import type { ChunkExpressions, NarrationStrength, NarrationStyleId } from '@/features/expression/catalog';
 import type { PronunciationRule } from '@/features/pronunciations/lib/pronounce';
 import type { VoiceTier } from '@/features/voices/api/voices.api';
@@ -43,8 +44,16 @@ export interface DocumentSummary {
   keepClutter: boolean;
   /** Set on a translation: the document it came from */
   translatedFromId: string | null;
+  /** Added from Explore's Community: someone else's writing, kept as they published it */
+  publicationId?: string | null;
+  /** A free classic from Explore */
+  fromCatalog?: boolean;
   /** A creator's script, kept in Studio rather than on the Soundshelf */
   isScript?: boolean;
+  /** A script's platform, narration type and sound, with its platform's guidance (Studio) */
+  studio?: StudioView | null;
+  /** A voice translation (Pro): being heard, or ready, and from and into which language */
+  voiceTranslation?: { status: 'listening' | 'ready' | 'failed'; from: Lang | null; to: Lang } | null;
   /** When a part was last edited in the app; reading the source again would undo edits */
   editedAt?: string | null;
   /** Seconds of new audio it has used from the owner's minutes */
@@ -103,6 +112,28 @@ export interface ReaderChunk {
   estimatedMs: number;
   /** Real length once audio exists for the active voice */
   durationMs: number | null;
+  /**
+   * Where the text is spoken in that audio ([character, ms] points), when it's
+   * known: the server sends it for the part being resumed, and the player keeps
+   * it for parts it has loaded. Only counts while `durationMs` is set.
+   */
+  anchors?: [number, number][] | null;
+}
+
+/** A character with lines in the story, and the voice that reads them */
+export interface CastMember {
+  name: string;
+  /** How the story describes them, in a few words */
+  description: string;
+  gender: 'female' | 'male' | null;
+  lines: number;
+  voiceId: string;
+  /** The listener picked this voice; otherwise it was cast automatically */
+  chosen: boolean;
+  /** False when there's no other voice to give them, so the narrator reads their lines */
+  ownVoice: boolean;
+  /** The narrator they're cast beside: their voice comes from its language and level */
+  narratorId: string;
 }
 
 export interface ReaderData {
@@ -115,5 +146,7 @@ export interface ReaderData {
   speed: number;
   /** The listener's pronunciations, applied to voices made on this phone too */
   pronunciations?: PronunciationRule[];
+  /** Characters with their own voices (older servers leave it out) */
+  cast?: CastMember[];
   chunks: ReaderChunk[];
 }

@@ -5,6 +5,7 @@ import { haptics } from '@/lib/haptics';
 
 import { authApi } from '../api/auth.api';
 import { getGoogleIdToken } from '../lib/google-sign-in';
+import { forgetPassword } from '../lib/pending-password';
 import { useAuthStore } from '../store/auth.store';
 import type { AuthSession } from '../types';
 
@@ -29,7 +30,14 @@ export function useSignUp() {
 
 export function useVerifyEmail() {
   const startSession = useStartSession();
-  return useMutation({ mutationFn: authApi.verifyEmail, onSuccess: startSession, onError: haptics.error });
+  return useMutation({
+    mutationFn: authApi.verifyEmail,
+    onSuccess: async (session) => {
+      forgetPassword();
+      await startSession(session);
+    },
+    onError: haptics.error,
+  });
 }
 
 export function useResendVerification() {

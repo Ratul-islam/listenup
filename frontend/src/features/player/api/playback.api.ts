@@ -1,6 +1,8 @@
 import { api } from '@/lib/api/client';
 import type { Lang } from '@/lib/languages';
 
+import type { TextAnchor } from '../lib/sync';
+
 export interface ChunkAudio {
   index: number;
   voiceId: string;
@@ -8,6 +10,8 @@ export interface ChunkAudio {
   durationMs: number;
   mimeType: string;
   url: string;
+  /** Where the text is spoken in the audio, for the highlight; missing when it isn't known */
+  anchors?: TextAnchor[] | null;
 }
 
 export interface ListeningStats {

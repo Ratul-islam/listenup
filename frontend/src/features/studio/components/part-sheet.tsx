@@ -289,13 +289,12 @@ function PartEditor({ documentId, title, part, scriptVoiceId, free, onlyPart, on
           {part.ownVoiceId ? (
             <SheetAction icon={<Mic size={18} color={t.foreground} />} label="Use the script's voice" onPress={() => settings({ index: part.index, voiceId: null })} />
           ) : null}
-          <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false}>
-            <VoiceList
-              languages={[part.language]}
-              selectedIds={voiceId ? [voiceId] : []}
-              onSelect={(v) => settings({ index: part.index, voiceId: v.id === scriptVoiceId && !part.ownVoiceId ? null : v.id })}
-            />
-          </ScrollView>
+          <VoiceList
+            languages={[part.language]}
+            selectedIds={voiceId ? [voiceId] : []}
+            onSelect={(v) => settings({ index: part.index, voiceId: v.id === scriptVoiceId && !part.ownVoiceId ? null : v.id })}
+            maxListHeight={360}
+          />
         </View>
       ) : null}
 

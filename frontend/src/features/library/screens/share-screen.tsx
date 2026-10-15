@@ -32,11 +32,27 @@ const EXTENSIONS: Record<string, string> = {
   'image/heic': 'heic',
 };
 
+/**
+ * The sending app chooses a shared file's name, so only its last part is kept,
+ * with nothing that could lead out of the folder it's copied to ("../", "/", "\\").
+ */
+function safeName(name: string | null | undefined) {
+  const last = (name ?? '').split(/[/\\]/).pop() ?? '';
+  return last
+    .replace(/[\u0000-\u001f<>:"|?*]/g, '')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^\.+/, '')
+    .trim()
+    .slice(0, 120);
+}
+
 /** A shared file under a name the server recognises, copied into the cache first */
 function localCopy(payload: ResolvedSharePayload, i: number) {
   const mime = payload.contentMimeType ?? payload.mimeType ?? '';
-  const ext = EXTENSIONS[mime] ?? (payload.originalName?.split('.').pop() || 'bin');
-  const base = payload.originalName?.replace(/\.[^.]+$/, '') || `Shared ${i + 1}`;
+  const name = safeName(payload.originalName);
+  const nameExt = name.includes('.') ? name.split('.').pop()! : '';
+  const ext = EXTENSIONS[mime] ?? (/^[a-z0-9]{1,8}$/i.test(nameExt) ? nameExt : 'bin');
+  const base = name.replace(/\.[^.]+$/, '') || `Shared ${i + 1}`;
   const target = new File(Paths.cache, `share-${Date.now()}-${i}`, `${base}.${ext}`);
   target.parentDirectory.create({ intermediates: true, idempotent: true });
   new File(payload.contentUri!).copy(target);

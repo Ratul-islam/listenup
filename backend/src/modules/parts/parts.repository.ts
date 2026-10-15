@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
+import { partDelivery, readStudio } from '../studio/studio-catalog.js'
 import type { ChunkExpressions } from '../expressions/expression-catalog.js'
 import type { ChunkDraft } from '../ingestion/text/chunker.js'
 import { documentLanguage, type Lang } from '../ingestion/text/language.js'
@@ -45,9 +46,13 @@ export class PartsRepository {
     await tx.$executeRaw`UPDATE "bookmarks" SET "chunkIndex" = GREATEST("chunkIndex" + ${delta}, 0) WHERE "documentId" = ${documentId} AND "chunkIndex" >= ${from}`
   }
 
-  private createParts(tx: Tx, documentId: string, at: number, drafts: PartDraft[]) {
+  /** New parts take the script's voice settings (Studio) */
+  private async createParts(tx: Tx, documentId: string, at: number, drafts: PartDraft[]) {
+    const doc = await tx.document.findUnique({ where: { id: documentId }, select: { studio: true } })
+    const delivery = partDelivery(readStudio(doc?.studio))
     return tx.documentChunk.createMany({
       data: drafts.map((d, i) => ({
+        ...(delivery && { delivery: json(delivery) }),
         documentId,
         index: at + i,
         text: d.text,

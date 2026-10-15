@@ -15,6 +15,7 @@ import { GoogleButton } from '../components/google-button';
 import { OrDivider } from '../components/or-divider';
 import { useGoogleSignIn, useResendVerification, useSignIn } from '../hooks/use-auth-mutations';
 import { isGoogleSignInEnabled } from '../lib/google-sign-in';
+import { holdPassword } from '../lib/pending-password';
 import { signInSchema, type SignInValues } from '../schemas';
 
 export default function SignInScreen() {
@@ -36,6 +37,7 @@ export default function SignInScreen() {
       if (hasErrorCode(error, 'EMAIL_NOT_VERIFIED')) {
         // Send a fresh code (ignored if one went out recently) and finish verification
         resendVerification.mutate(values.email);
+        holdPassword(values.email, values.password);
         router.push({ pathname: '/verify-email', params: { email: values.email } });
       }
     }

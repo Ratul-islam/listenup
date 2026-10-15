@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Spinner } from 'heroui-native';
-import { ChevronDown, Ellipsis, Lock, Mic, Pause, Plus, Replace, RotateCcw } from 'lucide-react-native';
+import { AudioLines, ChevronDown, ChevronRight, Ellipsis, Lock, Mic, Pause, Plus, Replace, RotateCcw, SlidersHorizontal } from 'lucide-react-native';
 import { memo, useMemo, useRef, useState, type ReactNode } from 'react';
 import { FlatList, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,15 +20,17 @@ import { audioEngine } from '@/features/player/engine/audio-engine';
 import { chunkDuration, timeline, usePlayerStore } from '@/features/player/store/player.store';
 import { VoicePickerSheet } from '@/features/voices/components/voice-picker-sheet';
 import { useVoice } from '@/features/voices/hooks/use-voices';
-import { LANGS } from '@/lib/languages';
+import { LANGS, LANGUAGE_NAMES } from '@/lib/languages';
 import { cardShadow, useTokens } from '@/lib/use-tokens';
 
 import { ArrangementBar } from '../components/arrangement-bar';
 import { PartSheet } from '../components/part-sheet';
 import { ReplaceSheet } from '../components/replace-sheet';
+import { StudioSettingsSheet, studioLabel } from '../components/studio-settings-sheet';
 import { TransportBar } from '../components/transport-bar';
 import { Waveform } from '../components/waveform';
 import { useScript } from '../hooks/use-scripts';
+import { useStudioCatalog } from '../hooks/use-studio';
 import { formatClock } from '../lib/time';
 
 const tabular = { fontVariant: ['tabular-nums' as const] };
@@ -59,6 +61,8 @@ export default function ScriptScreen() {
   const [exporting, setExporting] = useState<DocumentSummary | null>(null);
   const [actions, setActions] = useState<DocumentSummary | null>(null);
   const [replacing, setReplacing] = useState(false);
+  const [tuning, setTuning] = useState(false);
+  const catalog = useStudioCatalog();
 
   const chunks = useMemo(() => script.data?.chunks ?? [], [script.data]);
   // Where each part starts in the finished recording, pauses included
@@ -74,7 +78,10 @@ export default function ScriptScreen() {
   const serverParts = chunks.filter((c) => !isFree(c));
   const voiced = serverParts.filter((c) => c.durationMs != null).length;
   const totalSec = (timeline(chunks).total + chunks.reduce((n, c) => n + (c.pauseAfterMs ?? 0), 0)) / 1000;
-  const document = script.data?.document ?? doc.data;
+  // The document as last fetched: its platform and sound change without the parts changing
+  const document = doc.data ?? script.data?.document;
+  const maxSec = document?.studio?.guide?.maxSec ?? null;
+  const platformName = document?.studio?.platform ? catalog.data?.platforms.find((p) => p.id === document.studio?.platform)?.label : null;
   const part = selected != null ? (chunks.find((c) => c.index === selected) ?? null) : null;
 
   /** Plays from a part, or from a character in it (a sentence), right here */
@@ -123,10 +130,22 @@ export default function ScriptScreen() {
         <View className="gap-3.5 rounded-[28px] bg-surface p-4 dark:border dark:border-border" style={{ boxShadow: cardShadow }}>
           <View className="flex-row items-end justify-between">
             <View>
-              <Text className="text-[34px] font-bold leading-[38px]" style={tabular} accessibilityLabel={`Length ${formatClock(totalSec)}`}>
+              <Text
+                className={`text-[34px] font-bold leading-[38px] ${maxSec && totalSec > maxSec ? 'text-danger' : ''}`}
+                style={tabular}
+                accessibilityLabel={`Length ${formatClock(totalSec)}${maxSec ? ` of ${formatClock(maxSec)} for ${platformName}` : ''}`}
+              >
                 {formatClock(totalSec)}
               </Text>
-              <Text variant="caption">{chunks.length === 1 ? '1 part' : `${chunks.length} parts`}</Text>
+              <Text variant="caption" className={maxSec && totalSec > maxSec ? 'text-danger' : undefined}>
+                {maxSec
+                  ? totalSec > maxSec
+                    ? `${formatClock(totalSec - maxSec)} over ${platformName}’s ${formatClock(maxSec)}`
+                    : `of ${formatClock(maxSec)} for ${platformName}`
+                  : chunks.length === 1
+                    ? '1 part'
+                    : `${chunks.length} parts`}
+              </Text>
             </View>
             <Pressable
               onPress={() => setPicking(true)}
@@ -139,6 +158,31 @@ export default function ScriptScreen() {
               <ChevronDown size={14} color={t.accent} />
             </Pressable>
           </View>
+          <Pressable
+            onPress={() => setTuning(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`${studioLabel(document, catalog.data)}. Change the platform and sound`}
+            className="flex-row items-center gap-1.5 self-start rounded-full bg-surface-secondary px-3.5 py-2 active:opacity-80"
+          >
+            <SlidersHorizontal size={15} color={t.foreground} />
+            <Text className="text-[14px] font-medium">{studioLabel(document, catalog.data)}</Text>
+            <ChevronDown size={14} color={t.muted} />
+          </Pressable>
+          {document?.voiceTranslation ? (
+            <Pressable
+              onPress={() => router.push({ pathname: '/translation/[id]', params: { id } })}
+              accessibilityRole="button"
+              className="flex-row items-center gap-2 rounded-2xl bg-surface-secondary px-3.5 py-2.5 active:opacity-80"
+            >
+              <AudioLines size={16} color={t.accent} />
+              <Text className="flex-1 text-[14px]">
+                {document.voiceTranslation.from
+                  ? `Translated from ${LANGUAGE_NAMES[document.voiceTranslation.from]}. What was said, and the speaker’s voice`
+                  : 'What was said, and the speaker’s voice'}
+              </Text>
+              <ChevronRight size={16} color={t.muted} />
+            </Pressable>
+          ) : null}
           <ArrangementBar documentId={id} chunks={chunks} isFree={isFree} onSelect={jumpTo} />
           <Text variant="caption">
             {serverParts.length === 0
@@ -225,10 +269,12 @@ export default function ScriptScreen() {
         languages={languages}
         selectedIds={Object.values(script.data?.voices ?? {})}
         onSelect={(v) => changeVoice(v.id)}
+        documentId={id}
       />
       <ExportSheet document={exporting} onClose={() => setExporting(null)} />
       <DocumentActions document={actions} onClose={() => setActions(null)} onDeleted={router.back} />
       <ReplaceSheet documentId={id} visible={replacing} onClose={() => setReplacing(false)} />
+      <StudioSettingsSheet document={document ?? null} visible={tuning} onClose={() => setTuning(false)} />
     </CloudBackground>
   );
 }

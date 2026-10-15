@@ -27,8 +27,8 @@ export const SearchBar = forwardRef<TextInput, SearchBarProps>(function SearchBa
   };
 
   return (
-    <View className="h-12 flex-1 flex-row items-center gap-2.5 rounded-2xl bg-surface pl-3.5 pr-1.5 dark:border dark:border-border">
-      <Search size={18} color={t.muted} />
+    <View className="h-11 flex-1 flex-row items-center gap-2.5 rounded-full bg-surface pl-4 pr-1 dark:border dark:border-border">
+      <Search size={17} color={t.muted} />
       <TextInput
         ref={ref}
         value={value}

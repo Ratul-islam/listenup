@@ -25,11 +25,12 @@ export class PlaybackRepository {
     })
   }
 
-  upsertState(userId: string, documentId: string, data: Omit<Prisma.PlaybackStateUncheckedCreateInput, 'userId' | 'documentId'>) {
+  /** `listenedSec` is added to what the document has been played for so far */
+  upsertState(userId: string, documentId: string, { listenedSec = 0, ...data }: Omit<Prisma.PlaybackStateUncheckedCreateInput, 'userId' | 'documentId'> & { listenedSec?: number }) {
     return this.db.playbackState.upsert({
       where: { userId_documentId: { userId, documentId } },
-      create: { userId, documentId, ...data },
-      update: data,
+      create: { userId, documentId, listenedSec, ...data },
+      update: { ...data, ...(listenedSec > 0 && { listenedSec: { increment: listenedSec } }) },
     })
   }
 
@@ -39,6 +40,26 @@ export class PlaybackRepository {
       create: { userId, day, seconds },
       update: { seconds: { increment: seconds } },
     })
+  }
+
+  /**
+   * Seconds of `reportedSec` to count, moving the user's credit mark on by as much,
+   * in one statement: the mark starts at most `catchUpSec` back from `now`, and
+   * nothing is counted past `now`. The row lock makes a second report at the same
+   * moment start from where the first left the mark.
+   */
+  async creditListening(userId: string, reportedSec: number, now: Date, catchUpSec: number) {
+    const rows = await this.db.$queryRaw<{ sec: number }[]>`
+      WITH mark AS (
+        SELECT id, GREATEST(COALESCE(EXTRACT(EPOCH FROM "listenCreditedUntil"), 0), ${now.getTime() / 1000 - catchUpSec}::float8) AS start
+        FROM users WHERE id = ${userId} FOR UPDATE
+      ), credit AS (
+        SELECT id, start, FLOOR(LEAST(${reportedSec}::float8, ${now.getTime() / 1000}::float8 - start)) AS sec FROM mark
+      )
+      UPDATE users u SET "listenCreditedUntil" = to_timestamp(c.start + c.sec) AT TIME ZONE 'UTC'
+      FROM credit c WHERE u.id = c.id AND c.sec > 0
+      RETURNING c.sec::int AS sec`
+    return rows[0]?.sec ?? 0
   }
 
   recentDays(userId: string, limit: number) {

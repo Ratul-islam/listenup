@@ -72,6 +72,8 @@ export interface EmotionMark {
   direction?: string;
   /** Suggested by "Make it expressive" */
   ai?: boolean;
+  /** "Say it yourself": the listener's own performance of these words, kept on the server as measurements. Sent back as it came. */
+  shape?: { id: string; of: string; in: string };
 }
 
 export interface SoundMark {
@@ -80,9 +82,27 @@ export interface SoundMark {
   ai?: boolean;
 }
 
+/** Words a character says aloud; their own voice reads them */
+export interface SpeakerMark {
+  start: number;
+  end: number;
+  /** The character, as the story names them */
+  name: string;
+  gender?: 'female' | 'male';
+  /** Decides their voice, with their gender; set by the server */
+  rank: number;
+  /** The voice the listener chose for them */
+  voiceId?: string;
+  /** How they sound, in a few words; set by the server and sent back with the line */
+  manner?: string;
+  ai?: boolean;
+}
+
 export interface ChunkExpressions {
   emotions: EmotionMark[];
   sounds: SoundMark[];
+  /** Who says which words (older servers leave it out) */
+  speakers?: SpeakerMark[];
 }
 
 /** The emotions on the mood bar under the live text: the ones stories use most */

@@ -213,7 +213,7 @@ class KokoroVoiceModule : Module() {
   private fun synthesize(text: String, speaker: String, speed: Float): Map<String, Any> {
     val p = installed() ?: throw KokoroException("NOT_INSTALLED", "Natural voices aren't downloaded on this phone.")
     val sid = speakerId(p, speaker)
-    val file = File(cacheDir, cacheKey("v${p.version}", speaker, speed.toString(), text) + ".wav")
+    val file = File(cacheDir, cacheKey("v${p.version}", LEVEL_KEY, speaker, speed.toString(), text) + ".wav")
     if (file.length() > 44) {
       file.setLastModified(System.currentTimeMillis())
       return clipInfo(file, WavFile.durationMs(file), 0)
@@ -228,7 +228,7 @@ class KokoroVoiceModule : Module() {
     if (audio.samples.isEmpty()) throw KokoroException("NOTHING_TO_SAY", "There's nothing here the voice can say.")
 
     val tmp = File(cacheDir, "${UUID.randomUUID()}.part")
-    WavFile.write(tmp, audio.samples, audio.sampleRate)
+    WavFile.write(tmp, Loudness.level(audio.samples, audio.sampleRate), audio.sampleRate)
     if (!tmp.renameTo(file)) {
       tmp.delete()
       throw KokoroException("SYNTHESIS_FAILED", "Couldn't save the voice's audio.")
@@ -531,6 +531,67 @@ class KokoroVoiceModule : Module() {
       worker.execute { release() }
       worker.shutdown()
       downloader.shutdown()
+    }
+  }
+}
+
+// Part of every clip's cache name: clips made before speech was levelled are quieter, and aren't reused
+private const val LEVEL_KEY = "level1"
+
+/**
+ * Brings a clip's speech to the loudness the server gives every voice, so a
+ * Natural voice made on the phone is as loud as one made on the server and as
+ * an Expressive one (Kokoro comes out about 9 dB quieter than those). The same
+ * measure and limits as the backend's lib/audio/level.ts; keep the two alike.
+ */
+private object Loudness {
+  private const val TARGET_DB = -16.5
+  private const val WINDOW_MS = 50
+  // Quieter than this is silence or room noise, whatever the clip
+  private const val ABSOLUTE_GATE_DB = -50.0
+  // Windows this far under the clip's own speech are its pauses and breaths, not its level
+  private const val RELATIVE_GATE_DB = -15.0
+  private const val MAX_BOOST_DB = 18.0
+  private const val MAX_CUT_DB = 12.0
+  // Peaks above the knee are rounded off instead of clipped, none gets past the ceiling, and a clip
+  // is never pushed further into that than MAX_OVER_PEAK
+  private const val LIMIT_KNEE = 0.7
+  private const val LIMIT_CEILING = 0.85
+  private const val MAX_OVER_PEAK = 2.2
+
+  private fun toDb(power: Double) = 10 * kotlin.math.log10(power + 1e-12)
+
+  /** How loud the speech is, in dB below full scale: the average over the stretches where the voice is going */
+  private fun speechLevel(samples: FloatArray, sampleRate: Int): Double? {
+    val window = maxOf(1, sampleRate * WINDOW_MS / 1000)
+    val heard = ArrayList<Double>()
+    var from = 0
+    while (from + window <= samples.size) {
+      var sum = 0.0
+      for (i in from until from + window) sum += samples[i].toDouble() * samples[i]
+      val power = sum / window
+      if (toDb(power) > ABSOLUTE_GATE_DB) heard.add(power)
+      from += window
+    }
+    if (heard.isEmpty()) return null
+    val gate = toDb(heard.average()) + RELATIVE_GATE_DB
+    return toDb(heard.filter { toDb(it) > gate }.average())
+  }
+
+  fun level(samples: FloatArray, sampleRate: Int): FloatArray {
+    var peak = 0f
+    for (s in samples) peak = maxOf(peak, kotlin.math.abs(s))
+    val level = speechLevel(samples, sampleRate)
+    if (level == null || peak == 0f) return samples
+    val wanted = (TARGET_DB - level).coerceIn(-MAX_CUT_DB, MAX_BOOST_DB)
+    val gain = minOf(Math.pow(10.0, wanted / 20), MAX_OVER_PEAK / peak)
+    if (kotlin.math.abs(gain - 1) < 0.03) return samples
+    val room = LIMIT_CEILING - LIMIT_KNEE
+    return FloatArray(samples.size) { i ->
+      val v = samples[i] * gain
+      val size = kotlin.math.abs(v)
+      val limited = if (size <= LIMIT_KNEE) size else LIMIT_KNEE + room * kotlin.math.tanh((size - LIMIT_KNEE) / room)
+      (Math.signum(v) * limited).toFloat()
     }
   }
 }

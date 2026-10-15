@@ -26,9 +26,9 @@ export function CategoryChips({ value, onChange }: CategoryChipsProps) {
               haptics.tap();
               onChange(c.id);
             }}
-            className={`rounded-full px-3.5 py-2 ${active ? 'bg-accent-soft-bg' : 'active:bg-default'}`}
+            className={`h-9 justify-center rounded-full px-3.5 ${active ? 'bg-accent-soft-bg' : 'active:bg-default'}`}
           >
-            <Text className={`text-[14px] ${active ? 'font-semibold text-accent-soft-fg' : 'font-medium text-muted'}`}>{c.label}</Text>
+            <Text className={`text-[13.5px] ${active ? 'font-semibold text-accent-soft-fg' : 'font-medium text-muted'}`}>{c.label}</Text>
           </Pressable>
         );
       })}

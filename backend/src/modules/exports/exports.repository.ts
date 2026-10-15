@@ -28,11 +28,11 @@ export class ExportsRepository {
     })
   }
 
-  /** Ready clips with their files, for an offline download's manifest */
+  /** Ready clips with their files, for an offline download's manifest and for joining an MP3 */
   clipFiles(documentId: string) {
     return this.db.audioClip.findMany({
       where: { chunk: { documentId }, status: 'READY' },
-      select: { chunkId: true, voiceId: true, renderKey: true, storageKey: true, durationMs: true, mimeType: true },
+      select: { id: true, chunkId: true, voiceId: true, renderKey: true, storageKey: true, durationMs: true, mimeType: true, blobHash: true },
     })
   }
 
@@ -60,6 +60,17 @@ export class ExportsRepository {
     return count > 0
   }
 
+  /** Hands a running export over to a new job (its old one died); null if another request already did */
+  async takeOver(documentId: string, jobId: string | null, nextJobId: string) {
+    const { count } = await this.db.audioExport.updateMany({ where: { documentId, jobId, status: 'RUNNING' }, data: { jobId: nextJobId } })
+    return count ? this.db.audioExport.findUnique({ where: { documentId } }) : null
+  }
+
+  async takeOverOffline(documentId: string, jobId: string | null, nextJobId: string) {
+    const { count } = await this.db.offlineDownload.updateMany({ where: { documentId, jobId, status: 'RUNNING' }, data: { jobId: nextJobId } })
+    return count ? this.db.offlineDownload.findUnique({ where: { documentId } }) : null
+  }
+
   /** A stalled export (its process died) becomes FAILED, so it can be started again */
   async markStopped(documentId: string, jobId: string | null, error: string) {
     await this.db.audioExport.updateMany({ where: { documentId, jobId, status: 'RUNNING' }, data: { status: 'FAILED', error } })
@@ -69,6 +80,15 @@ export class ExportsRepository {
   async markOfflineStopped(documentId: string, jobId: string | null, error: string) {
     await this.db.offlineDownload.updateMany({ where: { documentId, jobId, status: 'RUNNING' }, data: { status: 'FAILED', error } })
     return this.db.offlineDownload.findUnique({ where: { documentId } })
+  }
+
+  /** Every MP3 a listener has made, newest first, with the document it's of */
+  listForUser(userId: string) {
+    return this.db.audioExport.findMany({
+      where: { document: { userId } },
+      orderBy: { updatedAt: 'desc' },
+      include: { document: { select: { id: true, title: true, isScript: true, language: true, status: true } } },
+    })
   }
 
   upsert(documentId: string, data: Omit<Prisma.AudioExportUncheckedCreateInput, 'documentId'>) {

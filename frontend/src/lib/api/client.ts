@@ -40,6 +40,15 @@ export function registerAuthHandlers(handlers: AuthHandlers) {
 
 const TIMEOUT_MS = 15_000;
 
+/** The phone's time zone ("Asia/Dhaka"): the server uses it to place Free users in a region for rewards */
+const TIME_ZONE = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+})();
+
 async function send<T>(
   path: string,
   { method = 'GET', body, timeoutMs = TIMEOUT_MS }: RequestOptions,
@@ -57,6 +66,7 @@ async function send<T>(
         Accept: 'application/json',
         ...(body !== undefined && !isForm && { 'Content-Type': 'application/json' }),
         ...(accessToken && { Authorization: `Bearer ${accessToken}` }),
+        ...(TIME_ZONE && { 'X-Time-Zone': TIME_ZONE }),
       },
       body: isForm ? body : body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,

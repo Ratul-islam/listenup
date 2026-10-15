@@ -23,6 +23,7 @@ import { LANGS, LANGUAGE_NAMES } from '@/lib/languages';
 import { useTokens } from '@/lib/use-tokens';
 
 import type { ImportLanguage, PickedFile } from '../api/documents.api';
+import { DigestCard } from '../components/digest-card';
 import { useImportFile, useImportText, useImportUrl } from '../hooks/use-documents';
 
 const FILE_TYPES = [
@@ -211,6 +212,13 @@ export default function ImportScreen() {
               />
             </GlassCard>
           ) : null}
+
+          {/* Not an import, but it's also "something to hear": made from what's already on the shelf */}
+          {panel ? null : (
+            <GlassCard className="p-2">
+              <DigestCard />
+            </GlassCard>
+          )}
         </KeyboardAwareScrollView>
       </View>
     </CloudBackground>

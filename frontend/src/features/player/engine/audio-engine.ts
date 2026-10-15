@@ -1,4 +1,6 @@
 import {
+  clearAllPreloadedSources,
+  clearPreloadedSource,
   createAudioPlayer,
   preload,
   requestNotificationPermissionsAsync,
@@ -14,7 +16,7 @@ import type { Lang, ReaderChunk, ReaderData } from '@/features/library/types';
 import { offlineFiles } from '@/features/offline/offline-files';
 import { DeviceChunk } from '@/features/on-device/device-chunk';
 import { isOnDeviceActive, onDeviceVoice, useOnDeviceStore } from '@/features/on-device/on-device-voice';
-import { voicesApi, type VoiceTier } from '@/features/voices/api/voices.api';
+import { voicesApi, type Voice, type VoiceTier } from '@/features/voices/api/voices.api';
 import { voicesKey } from '@/features/voices/hooks/use-voices';
 import { ApiError, getErrorMessage, hasErrorCode } from '@/lib/api/api-error';
 import { queryClient } from '@/lib/query-client';
@@ -23,10 +25,23 @@ import { setActivePronunciations, speakable } from '@/features/pronunciations/li
 import { phoneVoice } from '@/modules/phone-voice';
 
 import { playbackApi, type ChunkAudio } from '../api/playback.api';
-import { chunkDuration, globalPosition, initialPlayerState, locate, usePlayerStore, type AudioSource } from '../store/player.store';
+import { spokenLineStart } from '../hooks/use-sync-position';
+import { knownAnchors, msAtChar, type TextAnchor } from '../lib/sync';
+import { chunkDuration, globalPosition, initialPlayerState, locate, timeline, usePlayerStore, type AudioSource } from '../store/player.store';
+
+/** How the app plays audio; put back after anything that records */
+export const PLAYBACK_AUDIO_MODE = { playsInSilentMode: true, shouldPlayInBackground: true, interruptionMode: 'doNotMix', allowsRecording: false } as const;
 
 const REPORT_EVERY_MS = 15_000;
 const SKIP_MS = 15_000;
+// How often the player says where it is; the word highlight is only as fine as this
+const STATUS_EVERY_MS = 100;
+// After a new file goes in, the player may still report the old one's clock for a moment.
+// A position counts as the new file's once it's this close to where the file was started,
+// or after this long whatever it says. A file started part-way in is first moved to that place:
+// until that's been asked for, nothing it reports counts (it would be its own beginning).
+const FRESH_WITHIN_MS = 700;
+const FRESH_AFTER_MS = 1500;
 
 const get = usePlayerStore.getState;
 const set = usePlayerStore.setState;
@@ -60,18 +75,78 @@ class AudioEngine {
   private reportTimer: ReturnType<typeof setInterval> | null = null;
   private sleepTimer: ReturnType<typeof setTimeout> | null = null;
   private configured = false;
+  /** The document the notification is up for */
+  private lockScreenFor: string | null = null;
+  /** Files preloaded into memory; expo-audio keeps each until it's let go */
+  private preloaded = new Set<string>();
+  /** The player's clock belongs to the part on screen (false from asking for a part until its file is playing) */
+  private live = false;
+  /** Where the file last put in the player was started, and when (0: none since the part was asked for) */
+  private startedAtMs = 0;
+  private swappedAt = 0;
+  /** The file in the player starts part-way in and hasn't been moved there yet */
+  private awaitingSeek = false;
+  private voiceToken = 0;
+  /** Parts whose emotions changed since their audio was loaded */
+  private edited = new Set<number>();
+  /** Playback was stopped so a voice's sample could be heard; it carries on afterwards */
+  private heldForPreview = false;
+
+  /** Fetches a file into memory ahead of time, so swapping to it is near-instant */
+  private preloadFile(uri: string) {
+    this.preloaded.add(uri);
+    void preload({ uri }).catch(() => {});
+  }
+
+  /**
+   * Plays a file next, from `startMs` into it. Once it's in the player its preloaded copy isn't needed, so it goes.
+   * The notification is told where this file starts in the document as it goes in.
+   */
+  private swapTo(player: AudioPlayer, uri: string, startMs: number) {
+    this.expectAt(startMs);
+    this.awaitingSeek = startMs > 0;
+    player.replace({ uri });
+    this.updateLockScreen();
+    if (this.preloaded.delete(uri)) void clearPreloadedSource({ uri }).catch(() => {});
+  }
+
+  /** The player is about to jump within its file: positions from before the jump don't count */
+  private expectAt(ms: number) {
+    this.live = false;
+    this.awaitingSeek = false;
+    this.startedAtMs = ms;
+    this.swappedAt = Date.now();
+  }
+
+  /** Moves a file just put in the player to where it starts, once it has loaded (a move asked for sooner is ignored) */
+  private async startAt(player: AudioPlayer, offsetMs: number, wanted: () => boolean) {
+    await this.waitUntilLoaded(player);
+    if (!wanted()) return false;
+    // What it reports from here is the new place (the move's own report can come back before the call does),
+    // and the wait for a position that isn't near it starts now, not when the file went in
+    this.expectAt(offsetMs);
+    await player.seekTo(offsetMs / 1000);
+    return wanted();
+  }
+
+  private releasePreloaded() {
+    this.preloaded.clear();
+    void clearAllPreloadedSources().catch(() => {});
+  }
 
   private async ensurePlayer() {
     if (!this.configured) {
-      await setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true, interruptionMode: 'doNotMix' });
+      await setAudioModeAsync(PLAYBACK_AUDIO_MODE);
       AppState.addEventListener('change', (s) => s !== 'active' && void this.report());
       // Android 13+ needs this for the media notification / lock-screen controls
       void requestNotificationPermissionsAsync().catch(() => {});
       this.configured = true;
     }
     if (!this.player) {
-      this.player = createAudioPlayer(null, { updateInterval: 250, keepAudioSessionActive: true });
+      this.player = createAudioPlayer(null, { updateInterval: STATUS_EVERY_MS, keepAudioSessionActive: true });
       this.player.addListener('playbackStatusUpdate', this.onStatus);
+      // A drag or skip in the notification: a place in the whole document, which may be in another part
+      this.player.addListener('remoteSeek', ({ positionMs }) => void this.seek(positionMs));
     }
     return this.player;
   }
@@ -80,6 +155,14 @@ class AudioEngine {
     const now = Date.now();
     if (status.playing && this.lastTick) this.listenedMs += now - this.lastTick;
     this.lastTick = status.playing ? now : null;
+
+    // While a part loads, the player still holds the one before: its clock and its ending aren't this part's
+    if (!this.live) {
+      const near = Math.abs(status.currentTime * 1000 - this.startedAtMs) <= FRESH_WITHIN_MS;
+      const fresh = this.swappedAt > 0 && !this.awaitingSeek && status.isLoaded && (near || now - this.swappedAt > FRESH_AFTER_MS);
+      if (!fresh) return void set({ isPlaying: status.playing });
+      this.live = true;
+    }
 
     set({
       positionMs: Math.round((this.device?.startMs ?? 0) + status.currentTime * 1000),
@@ -112,6 +195,15 @@ class AudioEngine {
     return this.partVoice(index).voice;
   }
 
+  /** Whether this phone voices a part itself (its own voice, or a Natural voice downloaded to it) instead of playing the server's audio */
+  private madeOnPhone(index: number) {
+    const { chunks, speed } = get();
+    const { voice, tier } = this.partVoice(index);
+    if (tier === 'phone') return true;
+    // Where characters speak, the server makes it
+    return tier === 'natural' && !chunks[index]?.expressions.speakers?.length && !!onDeviceVoice.speakerFor(voice, speed);
+  }
+
   /** Audio URL for a chunk; requesting it makes the server (or, for phone voices and downloaded Natural voices, the device) voice it */
   private audioFor(index: number): Promise<PlayableAudio> {
     const { documentId, voiceId, chunks, speed } = get();
@@ -122,6 +214,9 @@ class AudioEngine {
     if (!pending) {
       const saved = chunk && tier !== 'phone' ? offlineFiles.clipFor(documentId!, chunk, voice) : null;
       const speaker = chunk && tier === 'natural' ? onDeviceVoice.speakerFor(voice, speed) : null;
+      // The phone voices a part in one voice. Where characters speak, the server makes it, so they
+      // get their own; if it can't right now, the phone reads the part rather than stopping.
+      const cast = !!chunk?.expressions.speakers?.length;
       pending = saved
         ? Promise.resolve<PlayableAudio>({
             index,
@@ -134,9 +229,11 @@ class AudioEngine {
           })
         : chunk && tier === 'phone'
           ? this.phoneAudio(chunk)
-          : chunk && speaker
+          : chunk && speaker && !cast
             ? this.deviceAudio(chunk, voice, speaker)
-            : fromServer(playbackApi.audio(documentId!, index, voiceId ?? undefined));
+            : chunk && speaker
+              ? fromServer(playbackApi.audio(documentId!, index, voiceId ?? undefined)).catch(() => this.deviceAudio(chunk, voice, speaker))
+              : fromServer(playbackApi.audio(documentId!, index, voiceId ?? undefined));
       pending.catch(() => this.urls.delete(key));
       this.urls.set(key, pending);
     }
@@ -163,9 +260,12 @@ class AudioEngine {
   private async deviceAudio(chunk: ReaderChunk, voiceId: string, speaker: string): Promise<PlayableAudio> {
     const documentId = get().documentId;
     const device = new DeviceChunk(chunk, speaker, (durationMs) => {
-      // The timeline firms up as parts are voiced
+      // The timeline, and the highlight's timing, firm up as parts are voiced
       if (get().documentId !== documentId || this.voiceFor(chunk.index) !== voiceId) return;
-      set((s) => ({ chunks: s.chunks.map((c) => (c.index === chunk.index ? { ...c, durationMs } : c)) }));
+      set((s) => ({
+        chunks: s.chunks.map((c) => (c.index === chunk.index ? { ...c, durationMs } : c)),
+        ...(s.playing?.index === chunk.index && this.device?.chunk === device && { playing: { index: chunk.index, durationMs, anchors: device.anchors() } }),
+      }));
     });
     device.requestAll();
     try {
@@ -196,20 +296,16 @@ class AudioEngine {
           continue;
         }
         this.device = { ...current, part: i, startMs: start };
-        player.replace({ uri: clip.uri });
+        this.swapTo(player, clip.uri, offset);
         player.setPlaybackRate(get().speed, 'high');
-        if (offset > 0) {
-          await this.waitUntilLoaded(player);
-          if (!wanted()) return;
-          await player.seekTo(offset / 1000);
-        }
+        if (offset > 0 && !(await this.startAt(player, offset, wanted))) return;
         if (autoplay) player.play();
         // Have the next part ready to swap in
         if (i + 1 < current.chunk.parts.length) {
           current.chunk
             .clip(i + 1)
             .then((next) => {
-              if (next.uri) void preload({ uri: next.uri });
+              if (next.uri) this.preloadFile(next.uri);
             })
             .catch(() => {});
         }
@@ -273,13 +369,15 @@ class AudioEngine {
       .then((audio) => {
         // Parts dropped by a seek are queued again
         audio.device?.requestAll();
-        if (audio.url) preload({ uri: audio.url });
+        if (audio.url) this.preloadFile(audio.url);
       })
       .catch(() => {});
   }
 
   private async loadChunk(index: number, offsetMs: number, autoplay: boolean) {
     const token = ++this.loadToken;
+    this.live = false;
+    this.swappedAt = 0;
     const player = await this.ensurePlayer();
     set({ chunkIndex: index, positionMs: offsetMs, isBuffering: true, finished: false, error: null, errorCode: null });
 
@@ -287,12 +385,27 @@ class AudioEngine {
       const audio = await this.audioFor(index);
       if (token !== this.loadToken) return;
 
-      // Real duration replaces the estimate so the timeline tightens up
+      // Real duration replaces the estimate so the timeline tightens up, and the highlight gets this audio's timing
       const durationMs = audio.device ? audio.device.estimatedMs() : audio.durationMs;
-      set((s) => ({ source: audio.source, chunks: s.chunks.map((c) => (c.index === index ? { ...c, durationMs } : c)) }));
+      // A download is the server's audio saved: what's known of that audio's timing is this file's too
+      const part = get().chunks[index];
+      const saved = audio.source === 'download' && part?.durationMs === audio.durationMs ? knownAnchors(part) : null;
+      const anchors: TextAnchor[] | null = audio.device ? audio.device.anchors() : (audio.anchors ?? saved);
+      const settle = () => {
+        this.edited.delete(index);
+        set((s) => ({
+          source: audio.source,
+          playing: { index, durationMs, anchors },
+          switchingTo: null,
+          // The part remembers its audio's timing, so coming back to it shows the right line before it has loaded again.
+          // Not for a part voiced on the phone piece by piece: its timing is still firming up.
+          chunks: s.chunks.map((c) => (c.index === index ? { ...c, durationMs, anchors: audio.device ? null : anchors } : c)),
+        }));
+      };
 
       this.device = null;
       if (audio.device) {
+        settle();
         audio.device.requestAll();
         const wanted = () => token === this.loadToken;
         let found: { part: number; startMs: number };
@@ -315,14 +428,12 @@ class AudioEngine {
         return;
       }
 
-      player.replace({ uri: audio.url });
+      // Swapped in before anything on screen updates, so the gap between parts stays short
+      this.swapTo(player, audio.url, offsetMs);
       player.setPlaybackRate(get().speed, 'high');
-      if (offsetMs > 0) {
-        // Seeking before the new source has loaded is ignored, so wait for it
-        await this.waitUntilLoaded(player);
-        if (token !== this.loadToken) return;
-        await player.seekTo(offsetMs / 1000);
-      }
+      // The highlight needs this audio's timing from its first moment, before any wait below
+      settle();
+      if (offsetMs > 0 && !(await this.startAt(player, offsetMs, () => token === this.loadToken))) return;
       if (autoplay) player.play();
       this.updateLockScreen();
       this.warmNext(index + 1);
@@ -330,7 +441,46 @@ class AudioEngine {
       if (token !== this.loadToken) return;
       if (this.fallBackToPhone(index, error)) return void this.loadChunk(index, offsetMs, autoplay);
       player.pause();
-      set({ isBuffering: false, isPlaying: false, error: getErrorMessage(error), errorCode: codeOf(error) });
+      set({ isBuffering: false, isPlaying: false, switchingTo: null, error: getErrorMessage(error), errorCode: codeOf(error) });
+    }
+  }
+
+  /**
+   * Loads a part and starts it at a character (the start of a line), once its
+   * audio says when that line is spoken. For audio that's about to be made
+   * again: a new voice, or new emotions.
+   */
+  private async loadChunkAtChar(index: number, char: number, autoplay: boolean) {
+    const chunk = get().chunks[index];
+    if (!chunk) return;
+    if (char <= 0) return this.loadChunk(index, 0, autoplay);
+    const token = ++this.loadToken;
+    this.live = false;
+    this.swappedAt = 0;
+    // What's playing is about to be replaced: stop it now, so the change is heard as one
+    this.player?.pause();
+    set({
+      chunkIndex: index,
+      playing: null,
+      // Read back the same way the highlight reads it, so it stays on this line while the new audio is made
+      positionMs: msAtChar(chunk.text.length, chunkDuration(chunk), knownAnchors(chunk), char),
+      isBuffering: true,
+      finished: false,
+      error: null,
+      errorCode: null,
+    });
+    try {
+      const audio = await this.audioFor(index);
+      if (token !== this.loadToken) return;
+      const durationMs = audio.device ? audio.device.estimatedMs() : audio.durationMs;
+      const anchors = audio.device ? audio.device.anchors() : (audio.anchors ?? null);
+      // The part takes its new audio's timing first, so the place worked out from it is read back as the same line
+      set((s) => ({ chunks: s.chunks.map((c) => (c.index === index ? { ...c, durationMs, anchors: audio.device ? null : anchors } : c)) }));
+      await this.loadChunk(index, msAtChar(chunk.text.length, durationMs, anchors, char), autoplay);
+    } catch (error) {
+      if (token !== this.loadToken) return;
+      if (this.fallBackToPhone(index, error)) return void this.loadChunk(index, 0, autoplay);
+      set({ isBuffering: false, isPlaying: false, switchingTo: null, error: getErrorMessage(error), errorCode: codeOf(error) });
     }
   }
 
@@ -373,14 +523,28 @@ class AudioEngine {
     if (next && get().documentId === document.id && get().finished) await this.open(next.id);
   }
 
+  /**
+   * The notification and lock screen show the whole document, not the one part
+   * in the player: its length (estimated for parts not voiced yet), and where
+   * the file playing starts in it. Android only; it needs the expo-audio patch
+   * in `patches/`, without which the bar shows the part alone.
+   */
   private updateLockScreen() {
-    const { document } = get();
+    const { document, chunks, chunkIndex } = get();
     if (!this.player || !document) return;
-    this.player.setActiveForLockScreen(
-      true,
-      { title: document.title, artist: document.author ?? 'ListenUp', albumTitle: 'ListenUp' },
-      { showSeekBackward: true, showSeekForward: true },
-    );
+    const { starts, total } = timeline(chunks);
+    const metadata = {
+      title: document.title,
+      artist: document.author ?? 'ListenUp',
+      albumTitle: 'ListenUp',
+      timelineDurationMs: total,
+      // A part voiced on the phone plays as several files
+      timelineOffsetMs: (starts[chunkIndex] ?? 0) + (this.device?.index === chunkIndex ? this.device.startMs : 0),
+    };
+    // Once per document; after that only what it shows changes, so the controls stay put between parts
+    if (this.lockScreenFor === document.id) return this.player.updateLockScreenMetadata(metadata);
+    this.player.setActiveForLockScreen(true, metadata, { showSeekBackward: true, showSeekForward: true });
+    this.lockScreenFor = document.id;
   }
 
   /** Saves position and listening time (for resume, streaks and stats) */
@@ -419,10 +583,19 @@ class AudioEngine {
       if (autoplay) this.play();
       return;
     }
-    if (state.documentId) await this.report();
+    // The same document again (in another voice): its place is saved before it's read back. Another
+    // document: what was playing stops now, and its place is saved on the way, without waiting for it.
+    if (state.documentId === documentId) await this.report();
+    else if (state.documentId) {
+      this.player?.pause();
+      void this.report();
+    }
 
     this.urls.clear();
+    this.releasePreloaded();
     this.device = null;
+    this.edited.clear();
+    this.voiceToken++;
     onDeviceVoice.dropQueued();
     set({ ...initialPlayerState, status: 'loading', documentId, speed: state.speed });
     // Natural voices on the phone: load the model while the document loads
@@ -432,18 +605,27 @@ class AudioEngine {
       setActivePronunciations(reader.pronunciations);
       const progress = reader.document.progress;
       const restart = !!progress?.completedAt;
+      const chunkIndex = restart ? 0 : (progress?.chunkIndex ?? 0);
+      const positionMs = restart ? 0 : (progress?.offsetMs ?? 0);
       set({
         status: 'ready',
         document: reader.document,
         chunks: reader.chunks,
+        cast: reader.cast ?? [],
         voices: reader.voices,
         expressive: reader.expressive,
         tiers: reader.tiers,
         voiceId: voiceId ?? progress?.voiceId ?? null,
         speed: reader.speed,
+        // Where to carry on from goes in with the document: the page opens on that line, never at the top first
+        chunkIndex,
+        positionMs,
+        isBuffering: true,
       });
+      // The timing sent with the document is the server's audio; a part this phone voices itself has its own
+      if (this.madeOnPhone(chunkIndex)) set((s) => ({ chunks: s.chunks.map((c) => (c.index === chunkIndex ? { ...c, anchors: null } : c)) }));
       this.startReporting();
-      await this.loadChunk(restart ? 0 : (progress?.chunkIndex ?? 0), restart ? 0 : (progress?.offsetMs ?? 0), autoplay);
+      await this.loadChunk(chunkIndex, positionMs, autoplay);
     } catch (error) {
       set({ status: 'error', error: getErrorMessage(error) });
     }
@@ -461,15 +643,54 @@ class AudioEngine {
   }
 
   play() {
+    this.heldForPreview = false;
     const { finished, error, chunkIndex, positionMs } = get();
     if (finished) return void this.loadChunk(0, 0, true);
     if (error) return void this.loadChunk(chunkIndex, positionMs, true);
+    // Its emotions changed while it was paused: voice it again, from the line it stopped on
+    if (this.edited.has(chunkIndex)) return void this.loadChunkAtChar(chunkIndex, spokenLineStart(), true);
     this.player?.play();
   }
 
   pause() {
+    this.heldForPreview = false;
     this.player?.pause();
     void this.report();
+  }
+
+  /**
+   * Stops playback while a voice's sample is heard (the voice list's ▶).
+   * Choosing a voice then starts the new one playing; leaving the list
+   * without choosing carries on as before.
+   */
+  holdForPreview() {
+    if (!get().isPlaying) return;
+    this.heldForPreview = true;
+    this.player?.pause();
+  }
+
+  /**
+   * A character's voice is about to change (every character's, with no name):
+   * if a part with their lines is playing, it stops now instead of talking on
+   * in the old voice while the change is saved. True if it was stopped; the
+   * caller then calls play(), which voices the part again from the line it was on.
+   */
+  holdForCast(name?: string) {
+    const { chunks, chunkIndex, isPlaying } = get();
+    const speakers = chunks[chunkIndex]?.expressions.speakers ?? [];
+    if (!isPlaying || !speakers.some((s) => !name || s.name === name)) return false;
+    this.player?.pause();
+    // Said now, not at the player's next report, so what follows knows it's stopped
+    set({ isPlaying: false });
+    return true;
+  }
+
+  /** The voice list has closed: carry on, unless a new voice is already on its way */
+  releasePreview() {
+    if (!this.heldForPreview) return;
+    const { switchingTo, isPlaying, isBuffering } = get();
+    if (!switchingTo && !isPlaying && !isBuffering) this.play();
+    this.heldForPreview = false;
   }
 
   toggle() {
@@ -482,10 +703,11 @@ class AudioEngine {
     const { chunks, chunkIndex, isPlaying } = get();
     const target = locate(chunks, globalMs);
     const device = this.device;
-    if (device && target.index === chunkIndex && this.player) {
+    if (device && device.index === chunkIndex && target.index === chunkIndex && this.player && this.swappedAt > 0) {
       // Inside the part playing: just move; otherwise find (and maybe voice) the part
       const partMs = (this.player.duration || 0) * 1000;
       if (target.offsetMs >= device.startMs && target.offsetMs < device.startMs + partMs) {
+        this.expectAt(target.offsetMs - device.startMs);
         set({ positionMs: target.offsetMs, finished: false });
         await this.player.seekTo((target.offsetMs - device.startMs) / 1000);
         return;
@@ -493,12 +715,29 @@ class AudioEngine {
     }
     // Sentences queued for parts nobody will hear now
     if (target.index !== chunkIndex) onDeviceVoice.dropQueued();
-    if (!device && target.index === chunkIndex && this.player) {
+    if (!device && target.index === chunkIndex && this.player && this.swappedAt > 0) {
+      this.expectAt(target.offsetMs);
       set({ positionMs: target.offsetMs, finished: false });
       await this.player.seekTo(target.offsetMs / 1000);
     } else {
       await this.loadChunk(target.index, target.offsetMs, isPlaying || get().finished);
     }
+  }
+
+  /**
+   * Jumps to a line: a character of a part (a tap in the full text). In the
+   * part playing it's a move to when that line is really spoken; in another
+   * part, that part is loaded first, since only its audio says when the line comes.
+   */
+  async seekToLine(index: number, char: number) {
+    const { chunks, chunkIndex, playing, isPlaying, finished } = get();
+    const chunk = chunks[index];
+    if (!chunk) return;
+    if (index === chunkIndex && playing?.index === index && this.swappedAt > 0 && !this.edited.has(index)) {
+      return this.seek(timeline(chunks).starts[index] + msAtChar(chunk.text.length, playing.durationMs, playing.anchors, char));
+    }
+    if (index !== chunkIndex) onDeviceVoice.dropQueued();
+    await this.loadChunkAtChar(index, char, isPlaying || finished);
   }
 
   skip(direction: 1 | -1) {
@@ -518,23 +757,81 @@ class AudioEngine {
     void this.report();
   }
 
-  /** Re-voices the rest of the document, restarting the current chunk */
+  /** A voice from the list the app already has, if it has it */
+  private knownVoice(voiceId: string) {
+    return queryClient.getQueryData<{ voices: Voice[] }>(voicesKey)?.voices.find((v) => v.id === voiceId);
+  }
+
+  /**
+   * Switches the document to another voice, from the line being heard. The old
+   * voice stops at once and the new one's audio is asked for straight away;
+   * the document's details for the new voice (real lengths, which parts keep
+   * their own voice) follow in the background. Of several quick picks, the last wins.
+   * It plays if it was playing, including when it was only stopped to hear a
+   * voice's sample first.
+   */
   async setVoice(voiceId: string) {
-    const { documentId, chunkIndex, isPlaying } = get();
+    const { documentId, chunkIndex, isPlaying, isBuffering } = get();
     if (!documentId) return;
+    const token = ++this.voiceToken;
+    const resume = isPlaying || isBuffering || this.heldForPreview;
+    this.heldForPreview = false;
+    const line = spokenLineStart();
+    const voice = this.knownVoice(voiceId);
+
+    this.loadToken++;
+    this.player?.pause();
     this.urls.clear();
+    this.releasePreloaded();
     this.device = null;
+    this.edited.clear();
     onDeviceVoice.dropQueued();
+    set({ switchingTo: voiceId, isBuffering: true, isPlaying: false, error: null, errorCode: null });
+
+    // The voice is known: its audio can be asked for before the document's details arrive
+    if (voice) {
+      set((s) => ({
+        voiceId,
+        voices: { ...s.voices, [voice.language]: voice.id },
+        tiers: { ...s.tiers, [voice.language]: voice.tier },
+        expressive: { ...s.expressive, [voice.language]: voice.expressive },
+        // Lengths were the old voice's
+        chunks: s.chunks.map((c) => (c.language === voice.language && !c.ownVoiceId ? { ...c, durationMs: null, voiceId: voice.id, tier: voice.tier, expressive: voice.expressive } : c)),
+      }));
+      void this.loadChunkAtChar(chunkIndex, line, resume);
+    }
+
     try {
       const reader = await documentsApi.script(documentId, voiceId);
+      if (token !== this.voiceToken || get().documentId !== documentId) return;
       setActivePronunciations(reader.pronunciations);
-      set({ voiceId, voices: reader.voices, expressive: reader.expressive, tiers: reader.tiers, chunks: reader.chunks });
-      await this.loadChunk(chunkIndex, 0, isPlaying);
+      const { playing } = get();
+      set({
+        voiceId,
+        voices: reader.voices,
+        expressive: reader.expressive,
+        tiers: reader.tiers,
+        // A new narrator recasts the characters to match its level
+        cast: reader.cast ?? [],
+        // The part in the player keeps the length, and the timing, its audio really has
+        chunks: reader.chunks.map((c) => (playing?.index === c.index ? { ...c, durationMs: playing.durationMs, anchors: playing.anchors } : c)),
+      });
+      if (!voice) await this.loadChunkAtChar(Math.min(chunkIndex, Math.max(reader.chunks.length - 1, 0)), line, resume);
       void this.report();
     } catch (error) {
-      if (this.switchVoiceOffline(voiceId, error)) return void this.loadChunk(chunkIndex, 0, isPlaying);
-      set({ error: getErrorMessage(error) });
+      if (token !== this.voiceToken) return;
+      // Already switched and playing (e.g. offline, with a voice this phone can make): nothing to undo
+      if (voice && error instanceof ApiError && error.isNetworkError) return;
+      if (!voice && this.switchVoiceOffline(voiceId, error)) return void this.loadChunkAtChar(chunkIndex, line, resume);
+      if (!voice) set({ switchingTo: null, isBuffering: false, error: getErrorMessage(error) });
     }
+  }
+
+  /** The Voices page changed who reads a language: the open document follows, if it has that language */
+  followPreferredVoice(voice: Pick<Voice, 'id' | 'language'>) {
+    const { documentId, chunks, voices } = get();
+    if (!documentId || voices[voice.language] === voice.id || !chunks.some((c) => c.language === voice.language)) return;
+    void this.setVoice(voice.id);
   }
 
   /**
@@ -545,8 +842,7 @@ class AudioEngine {
   private switchVoiceOffline(voiceId: string, error: unknown) {
     if (!(error instanceof ApiError && error.isNetworkError)) return false;
     const { documentId } = get();
-    const voices = queryClient.getQueryData<{ voices: { id: string; language: Lang; tier: ReaderData['tiers'][Lang]; expressive: boolean }[] }>(voicesKey)?.voices;
-    const voice = voices?.find((v) => v.id === voiceId);
+    const voice = this.knownVoice(voiceId);
     const downloaded = documentId ? offlineFiles.get(documentId) : null;
     const playable = voice && (voice.tier === 'phone' || onDeviceVoice.speakerFor(voice.id) || downloaded?.voices[voice.language] === voiceId);
     if (!voice || !playable) return false;
@@ -567,47 +863,70 @@ class AudioEngine {
     }
   }
 
+  /** Whether the voice reading a part can act out emotions */
+  takesEmotions(index: number) {
+    const { chunks, expressive } = get();
+    const chunk = chunks[index];
+    if (!chunk) return false;
+    return chunk.ownVoiceId && chunk.expressive !== undefined ? chunk.expressive : expressive[chunk.language];
+  }
+
   /** New emotions for a chunk; it's re-voiced the next time it loads */
   setExpressions(index: number, expressions: ChunkExpressions) {
-    this.forget(index);
-    set((s) => ({ chunks: s.chunks.map((c) => (c.index === index ? { ...c, expressions, durationMs: null } : c)) }));
+    // Voices that read plainly sound the same whatever the emotions, so their audio stays
+    const changesSound = this.takesEmotions(index);
+    if (changesSound) {
+      this.forget(index);
+      this.edited.add(index);
+    }
+    set((s) => ({
+      // The part in the player keeps the length of the audio it's playing
+      chunks: s.chunks.map((c) => (c.index === index ? { ...c, expressions, ...(changesSound && s.playing?.index !== index && { durationMs: null }) } : c)),
+    }));
   }
 
   /** Re-voices a chunk and plays it from a character, so an edit can be heard right away */
   async replayFrom(index: number, char: number) {
-    const chunk = get().chunks[index];
-    if (!chunk) return;
-    const token = ++this.loadToken;
-    this.player?.pause();
-    const at = (duration: number) => Math.round((char / Math.max(chunk.text.length, 1)) * duration);
-    set({ chunkIndex: index, positionMs: at(chunkDuration(chunk)), isBuffering: true, finished: false, error: null });
-    try {
-      const audio = await this.audioFor(index);
-      if (token !== this.loadToken) return;
-      await this.loadChunk(index, at(audio.durationMs), true);
-    } catch (error) {
-      if (token !== this.loadToken) return;
-      if (this.fallBackToPhone(index, error)) return void this.loadChunk(index, 0, true);
-      set({ isBuffering: false, isPlaying: false, error: getErrorMessage(error), errorCode: codeOf(error) });
-    }
+    await this.loadChunkAtChar(index, char, true);
+  }
+
+  /**
+   * A run of edits is finished (painting, say). If the part playing changed,
+   * it's voiced again from the line being heard; otherwise the next part is
+   * got ready, so there's no wait when it's reached.
+   */
+  commitEdits() {
+    const { chunkIndex, isPlaying } = get();
+    if (!this.edited.has(chunkIndex)) return this.warmNext(chunkIndex + 1);
+    // Paused: it's voiced again when play is pressed
+    if (isPlaying) void this.loadChunkAtChar(chunkIndex, spokenLineStart(), true);
   }
 
   /**
    * Takes in emotions changed in the background ("Make it expressive", "Remove
-   * all"). The chunk playing now keeps its audio; later ones are re-voiced.
+   * all"). Later parts are voiced again when they're reached. With `replay`,
+   * the part playing is too, from the line being heard, so the change is
+   * heard at once; otherwise it keeps its audio.
    */
-  applyReader(reader: ReaderData) {
-    const { chunkIndex } = get();
+  applyReader(reader: ReaderData, { replay = false } = {}) {
+    const { chunkIndex, isPlaying, playing, source } = get();
     setActivePronunciations(reader.pronunciations);
-    this.forget(chunkIndex + 1, Number.MAX_SAFE_INTEGER);
+    // The server no longer has current audio for the part playing: what's in the player is out of date
+    const stale = replay && source === 'server' && playing?.index === chunkIndex && reader.chunks[chunkIndex]?.durationMs === null;
+    this.forget(stale ? chunkIndex : chunkIndex + 1, Number.MAX_SAFE_INTEGER);
     set((s) => ({
       document: reader.document,
+      cast: reader.cast ?? [],
       chunks: s.chunks.map((c, i) => {
         const fresh = reader.chunks[i];
         if (!fresh) return c;
-        return i === chunkIndex ? { ...c, expressions: fresh.expressions } : fresh;
+        return i === chunkIndex && !stale ? { ...c, expressions: fresh.expressions } : fresh;
       }),
     }));
+    if (stale && isPlaying) void this.loadChunkAtChar(chunkIndex, spokenLineStart(), true);
+    else if (stale) this.edited.add(chunkIndex);
+    else this.warmNext(chunkIndex + 1);
+    return stale && isPlaying;
   }
 
   /**
@@ -627,7 +946,7 @@ class AudioEngine {
       const sound = (c: ReaderChunk) => JSON.stringify([c.text, c.take, c.sentenceTakes, c.ownVoiceId, c.voiceId]);
       const unchanged = playing && fresh && sound(playing) === sound(fresh);
       for (const key of [...this.urls.keys()]) if (!unchanged || Number(key.split(':')[1]) !== chunkIndex) this.urls.delete(key);
-      set({ document: reader.document, chunks: reader.chunks, chunkIndex: Math.min(chunkIndex, Math.max(reader.chunks.length - 1, 0)) });
+      set({ document: reader.document, chunks: reader.chunks, cast: reader.cast ?? [], chunkIndex: Math.min(chunkIndex, Math.max(reader.chunks.length - 1, 0)) });
     } catch {
       // Picked up the next time the document opens
     }
@@ -650,11 +969,17 @@ class AudioEngine {
     this.loadToken++;
     this.player?.pause();
     this.player?.setActiveForLockScreen(false);
+    this.lockScreenFor = null;
     this.setSleepTimer(null);
     if (this.reportTimer) clearInterval(this.reportTimer);
     this.reportTimer = null;
     this.urls.clear();
+    this.releasePreloaded();
     this.device = null;
+    this.edited.clear();
+    this.voiceToken++;
+    this.live = false;
+    this.heldForPreview = false;
     onDeviceVoice.dropQueued();
     set({ ...initialPlayerState, speed: get().speed });
   }

@@ -5,6 +5,9 @@ node_modules/
 .env
 .env.*
 !.env.example
+# Google Cloud service account keys (Vertex AI): on a host, give the key as an env var instead
+vertex-key.json
+*-key.json
 
 # Build output
 dist/

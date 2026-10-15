@@ -3,23 +3,41 @@ import path from 'node:path'
 import { ALLOWED_UPLOADS } from '../../config/constants.js'
 import { Prisma, type Document, type DocumentChunk, type PlaybackState } from '../../generated/prisma/client.js'
 import { hasLiveJob, queue, QUEUES, startQueue, type ProcessDocumentJob, type TranslateDocumentJob } from '../../lib/queue.js'
+import { textAnchors } from '../../lib/audio/align.js'
+import type { Pause } from '../../lib/audio/pauses.js'
 import { storage } from '../../lib/storage/storage.js'
 import { AppError } from '../../utils/AppError.js'
 import { UNTITLED } from '../ingestion/ingestion.service.js'
 import { LANGS, type Lang } from '../ingestion/text/language.js'
+import { castList } from '../expressions/cast-list.js'
 import { readExpressions } from '../expressions/expression-catalog.js'
 import { readSentenceTakes } from '../tts/render-plan.js'
 import { planFor } from '../tts/tts.service.js'
 import type { UsageService } from '../usage/usage.service.js'
 import type { VoiceDefinition } from '../voices/voice-catalog.js'
-import type { VoicesService } from '../voices/voices.service.js'
+import { mainLanguage, type VoicesService } from '../voices/voices.service.js'
 import { env } from '../../config/env.js'
 import { CATEGORY_KINDS, type DocumentsRepository } from './documents.repository.js'
 import { chatCompletion } from '../../lib/openrouter.js'
 import { lexiconFor } from '../pronunciations/lexicon-cache.js'
-import type { CreateBody, DigestBody, ListQuery, TextBody, TranslateBody, UpdateBody, UploadCompleteBody, UploadStartBody, UrlBody } from './documents.schema.js'
+import { findCatalogItem } from '../catalog/catalog.data.js'
+import { catalogTextKey, isCatalogKey, sourceOf } from '../catalog/catalog.service.js'
+import { readStudio } from '../studio/studio-catalog.js'
+import type { StudioSettingsBody } from '../studio/studio.schema.js'
+import { studioView } from '../studio/studio.service.js'
+import type { CatalogBody, CommunityBody, CreateBody, DigestBody, ListQuery, TextBody, TranslateBody, UpdateBody, UploadCompleteBody, UploadStartBody, UrlBody } from './documents.schema.js'
 
 type WithPlayback = Document & { playback?: PlaybackState[] }
+
+/** What a voice translation's card needs: where it's up to, and its languages */
+function voiceTranslationOf(studio: unknown) {
+  const t = (studio as { translation?: { status?: string; from?: string | null; to?: string } } | null)?.translation
+  return t?.to ? { status: t.status ?? 'ready', from: t.from ?? null, to: t.to } : null
+}
+
+/** A new script's settings as stored (only scripts have them) */
+const studioOf = (script: boolean, studio: StudioSettingsBody | undefined) =>
+  script && studio ? { studio: readStudio(studio) as Prisma.InputJsonValue } : {}
 
 /** Client-facing document card data */
 export function toSummary(doc: WithPlayback) {
@@ -43,8 +61,16 @@ export function toSummary(doc: WithPlayback) {
     usedOcr: doc.usedOcr,
     keepClutter: doc.keepClutter,
     translatedFromId: doc.translatedFromId,
+    /** Added from Explore's Community: someone else's writing, in their voice */
+    publicationId: doc.publicationId,
+    /** A free classic from Explore (its lines can be posted as clips) */
+    fromCatalog: isCatalogKey(doc.fileKey),
     /** A creator's script, kept in Studio */
     isScript: doc.isScript,
+    /** A script's platform, narration type and voice settings, with its platform's guidance */
+    studio: doc.isScript || doc.studio ? studioView(doc.studio) : null,
+    /** A voice translation (Pro): being heard, or ready, and from and into which language */
+    voiceTranslation: voiceTranslationOf(doc.studio),
     /** When a part was last edited; reading the source again would undo edits */
     editedAt: doc.editedAt,
     /** Seconds of new audio this document has used from its owner's minutes */
@@ -205,7 +231,7 @@ export class DocumentsService {
     return { uploadId, url, method: 'PUT' as const, headers: { 'Content-Type': mime } }
   }
 
-  /** Adds pasted text, a link, an uploaded file or today's digest */
+  /** Adds pasted text, a link, an uploaded file, today's digest or a free classic */
   create(userId: string, body: CreateBody) {
     switch (body.from) {
       case 'text':
@@ -216,11 +242,62 @@ export class DocumentsService {
         return this.completeUpload(userId, body)
       case 'digest':
         return this.digest(userId, body)
+      case 'catalog':
+        return this.createFromCatalog(userId, body)
+      case 'community':
+        return this.createFromCommunity(userId, body)
     }
   }
 
+  /**
+   * A writing from Explore's Community: the listener gets their own copy of
+   * the writer's frozen version, which plays in the writer's voice with audio
+   * already made. Adding it twice gives back the first.
+   */
+  private async createFromCommunity(userId: string, { id }: CommunityBody) {
+    const existing = await this.documentsRepository.findCopy(userId, id)
+    if (existing) return toSummary(existing)
+    const publication = await this.documentsRepository.findLiveWriting(id)
+    if (!publication?.master) throw new AppError('That writing is no longer in Explore', 404, 'PUBLICATION_NOT_FOUND')
+    try {
+      return toSummary(await this.documentsRepository.copyPublication(userId, publication, publication.master, publication.user.penName))
+    } catch (e) {
+      // Tapped twice at once: the other request made it
+      const other = await this.documentsRepository.findCopy(userId, id)
+      if (other) return toSummary(other)
+      throw e
+    }
+  }
+
+  /**
+   * A free classic from Explore. Its text is shared by everyone who adds it
+   * (fetched once, see catalogText), so the same chunks, and the same audio,
+   * serve them all. Adding one twice gives back the first.
+   */
+  private async createFromCatalog(userId: string, { id }: CatalogBody) {
+    const item = findCatalogItem(id)
+    if (!item) throw new AppError('That title is no longer in Explore', 404, 'CATALOG_ITEM_NOT_FOUND')
+    const fileKey = catalogTextKey(item.id)
+    const existing = await this.documentsRepository.findOwnedByFileKey(userId, fileKey)
+    if (existing) return toSummary(existing)
+
+    const doc = await this.documentsRepository.create({
+      userId,
+      title: item.title,
+      author: item.author,
+      // Shelved with books; the text itself is plain
+      kind: 'EPUB',
+      mimeType: 'text/plain',
+      fileKey,
+      sourceUrl: sourceOf(item).url,
+      languageHint: item.language,
+    })
+    await this.enqueue({ documentId: doc.id })
+    return toSummary(doc)
+  }
+
   /** The file is in storage: create the document and start reading it. Safe to repeat. */
-  private async completeUpload(userId: string, { uploadId, fileName, language, script }: UploadCompleteBody) {
+  private async completeUpload(userId: string, { uploadId, fileName, language, script, studio }: UploadCompleteBody) {
     const existing = await this.documentsRepository.findOwned(userId, uploadId)
     if (existing) return toSummary(existing)
 
@@ -244,6 +321,7 @@ export class DocumentsService {
       fileKey,
       languageHint: languageHint(language),
       isScript: script,
+      ...studioOf(script, studio),
     })
     await this.enqueue({ documentId: doc.id })
     return toSummary(doc)
@@ -253,7 +331,7 @@ export class DocumentsService {
    * Pasted text of any length up to the limit: it's split into parts on the
    * server, so a long script never has to be cut up by hand.
    */
-  private async createFromText(userId: string, { title, text, language, script }: TextBody) {
+  private async createFromText(userId: string, { title, text, language, script, studio }: TextBody) {
     const doc = await this.documentsRepository.create({
       userId,
       title: title || UNTITLED,
@@ -261,6 +339,7 @@ export class DocumentsService {
       mimeType: 'text/plain',
       languageHint: languageHint(language),
       isScript: script,
+      ...studioOf(script, studio),
     })
     const fileKey = sourceKey(userId, doc.id, 'txt')
     await storage.put(fileKey, Buffer.from(text, 'utf8'), 'text/plain')
@@ -269,7 +348,7 @@ export class DocumentsService {
     return toSummary(saved)
   }
 
-  private async createFromUrl(userId: string, { url, language, script }: UrlBody) {
+  private async createFromUrl(userId: string, { url, language, script, studio }: UrlBody) {
     const host = new URL(url).hostname.replace(/^www\./, '')
     const doc = await this.documentsRepository.create({
       userId,
@@ -279,6 +358,7 @@ export class DocumentsService {
       author: host,
       languageHint: languageHint(language),
       isScript: script,
+      ...studioOf(script, studio),
     })
     await this.enqueue({ documentId: doc.id })
     return toSummary(doc)
@@ -291,6 +371,8 @@ export class DocumentsService {
   async translate(userId: string, id: string, { language }: TranslateBody) {
     const source = await this.owned(userId, id)
     if (source.status !== 'READY') throw new AppError('This document is still being prepared', 409, 'DOCUMENT_NOT_READY')
+    // It would outlive the writer unpublishing it
+    if (source.publicationId) throw new AppError('Writing from Explore can’t be translated. It stays as its writer published it.', 400, 'FROM_COMMUNITY')
     if (source.language === language) throw new AppError(`This document is already in ${LANGUAGE_LABELS[language]}`, 400, 'SAME_LANGUAGE')
     await this.usageService.assertCanTranslate(userId, source.charCount)
 
@@ -322,6 +404,8 @@ export class DocumentsService {
 
     const recent = await this.documentsRepository.recentForDigest(userId, new Date(Date.now() - DIGEST_LOOKBACK_MS), DIGEST_ITEMS)
     if (!recent.length) throw new AppError('Add or listen to something first, and your digest will cover it.', 404, 'NOTHING_TO_DIGEST')
+    // Free gets a few a month
+    await this.usageService.assertCanDigest(userId)
 
     const languages = recent.map((d) => d.language).filter((l): l is Lang => !!l && l !== 'mixed')
     const language = (languages.sort((a, b) => languages.filter((x) => x === b).length - languages.filter((x) => x === a).length)[0] ?? 'en') as Lang
@@ -332,6 +416,7 @@ export class DocumentsService {
       await chatCompletion(
         {
           model: env.OPENROUTER_TEXT_MODEL,
+          userId,
           system:
             `Write a friendly spoken morning briefing in ${DIGEST_LANGUAGES[language]} about the listener's recent reading below. ` +
             'Open with one warm sentence, then give each item a short paragraph with its main points, then close with one sentence. ' +
@@ -356,6 +441,7 @@ export class DocumentsService {
       const fileKey = sourceKey(userId, doc.id, 'txt')
       await storage.put(fileKey, Buffer.from(text, 'utf8'), 'text/plain')
       const saved = await this.documentsRepository.update(doc.id, { fileKey })
+      await this.usageService.recordDigest(userId)
       await this.enqueue({ documentId: doc.id })
       return toSummary(saved)
     } catch (e) {
@@ -381,6 +467,7 @@ export class DocumentsService {
     if (doc.status === 'PROCESSING' || doc.status === 'PENDING') {
       throw new AppError('This document is still being prepared', 409, 'DOCUMENT_BUSY')
     }
+    if (doc.publicationId) throw new AppError('This writing came from Explore and is kept as its writer published it.', 400, 'FROM_COMMUNITY')
     if (ocr && (!['PDF', 'IMAGE'].includes(doc.kind) || doc.translatedFromId)) {
       throw new AppError('Only PDFs and photos can be re-read with OCR', 400, 'OCR_NOT_SUPPORTED')
     }
@@ -401,6 +488,14 @@ export class DocumentsService {
     ]).catch((e) => console.error(`[documents] storage cleanup failed for ${id}`, e))
   }
 
+  /** Where a voiced part's text is spoken, from the silences already measured in its audio; null when they aren't known */
+  private async anchorsOf(documentId: string, chunk: DocumentChunk, voiceId: string, durationMs: number) {
+    const pauses = (await this.documentsRepository.clipPauses(documentId, chunk.index, voiceId)) as Pause[] | null
+    if (!pauses) return null
+    const sentences = (chunk.sentences as unknown as { start: number; end: number }[]) ?? []
+    return textAnchors({ text: chunk.text, sentences, durationMs, pauses })
+  }
+
   /**
    * The document as parts, for the player and the script editor: text with
    * sentence offsets for live highlighting, real durations for parts already
@@ -411,16 +506,31 @@ export class DocumentsService {
     const doc = await this.owned(userId, id)
     if (doc.status !== 'READY') throw new AppError('This document is still being prepared', 409, 'DOCUMENT_NOT_READY')
 
-    const [prefs, lexicon] = await Promise.all([this.voicesService.getPreferences(userId), lexiconFor(userId)])
+    const [prefs, lexicon] = await Promise.all([this.voicesService.getPreferences(userId, id), lexiconFor(userId)])
     const chosen = voiceId ?? doc.playback[0]?.voiceId ?? null
-    const resolved = Object.fromEntries(LANGS.map((lang) => [lang, this.voicesService.resolve(chosen, lang, prefs)])) as Record<Lang, VoiceDefinition>
+    // In a document that's mostly one language, its voice reads the rest too when it can
+    const resolved = Object.fromEntries(LANGS.map((lang) => [lang, this.voicesService.resolve(chosen, lang, prefs, mainLanguage(doc.language))])) as Record<Lang, VoiceDefinition>
     const perLang = <T>(pick: (v: VoiceDefinition) => T) => Object.fromEntries(LANGS.map((lang) => [lang, pick(resolved[lang])])) as Record<Lang, T>
 
     const chunks = await this.documentsRepository.listChunks(id)
     // Each part's voice: its own (a character's) or its language's
-    const voiceOf = (c: DocumentChunk) => this.voicesService.forPart(c, resolved[c.language as Lang])
+    const voiceOf = (c: DocumentChunk) => this.voicesService.forPart(c, resolved[c.language as Lang], prefs)
     const clips = await this.documentsRepository.readyClips(id, [...new Set(chunks.map((c) => voiceOf(c).id))])
     const known = new Map(clips.map((c) => [`${c.chunk.index}:${c.voiceId}`, c]))
+    // Audio made before the latest edit will be regenerated, so its length doesn't count
+    const currentClip = (c: DocumentChunk) => {
+      const voice = voiceOf(c)
+      const clip = known.get(`${c.index}:${voice.id}`)
+      return clip && clip.renderKey === planFor(c, voice, lexicon).key ? clip : null
+    }
+
+    // The part the listener left off in also says when its text is spoken, so the
+    // app can open on the right line before it has asked for any audio
+    const state = doc.playback[0]
+    const resume = chunks.find((c) => c.index === (state?.completedAt ? 0 : (state?.chunkIndex ?? 0)))
+    const resumeClip = resume ? currentClip(resume) : null
+    // The page opens without them too, so a failure here never stops it
+    const resumeAnchors = resume && resumeClip?.durationMs ? await this.anchorsOf(id, resume, voiceOf(resume).id, resumeClip.durationMs).catch(() => null) : null
 
     return {
       document: toSummary(doc),
@@ -431,11 +541,11 @@ export class DocumentsService {
       tiers: perLang((v) => v.tier),
       speed: doc.playback[0]?.speed ?? prefs.speed,
       pronunciations: lexicon.rules,
+      /** Characters with lines, and who reads each (found by "Make it expressive") */
+      cast: castList(doc.narrationBrief, chunks, (language) => resolved[language as Lang]),
       chunks: chunks.map((c: DocumentChunk) => {
         const voice = voiceOf(c)
-        const clip = known.get(`${c.index}:${voice.id}`)
-        // Audio made before the latest edit will be regenerated, so its length doesn't count
-        const current = clip && clip.renderKey === planFor(c, voice, lexicon).key ? clip : null
+        const current = currentClip(c)
         return {
           index: c.index,
           text: c.text,
@@ -456,6 +566,8 @@ export class DocumentsService {
           durationMs: current?.durationMs ?? null,
           /** The voiced audio's loudness in 48 slices (0–100), once measured */
           peaks: (current?.blob?.peaks as number[] | null | undefined) ?? null,
+          /** Where the text is spoken in that audio ([character, ms] points), on the part being resumed only */
+          ...(resumeAnchors && c.index === resume?.index && { anchors: resumeAnchors }),
         }
       }),
     }

@@ -8,6 +8,7 @@ import { API_PREFIX } from "./config/constants.js";
 import { env, isProduction, ttsProviderName } from "./config/env.js";
 import { queue, startQueue } from "./lib/queue.js";
 import { startWorkers } from "./workers.js";
+import { serializeRequest } from "./utils/log-url.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -17,7 +18,8 @@ export async function buildApp() {
   // Behind a proxy in production (Render, Vercel…): the client IP is the X-Forwarded-For entry
   // the host's own proxy added (TRUST_PROXY_HOPS from the right). Entries further left are
   // whatever the client sent, so trusting them would let anyone dodge every rate limit
-  const app = Fastify({ logger: true, trustProxy: isProduction ? (_address: string, hop: number) => hop < env.TRUST_PROXY_HOPS : false });
+  // Request logs hide the secrets some addresses carry (podcast feeds, signed links)
+  const app = Fastify({ logger: { serializers: { req: serializeRequest } }, trustProxy: isProduction ? (_address: string, hop: number) => hop < env.TRUST_PROXY_HOPS : false });
 
   // Zod schemas on routes validate request bodies/params/querystrings
   app.setValidatorCompiler(validatorCompiler);

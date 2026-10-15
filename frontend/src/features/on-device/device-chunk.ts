@@ -113,6 +113,24 @@ export class DeviceChunk {
     return Math.round(knownMs + (restChars * knownMs) / knownChars);
   }
 
+  /**
+   * Where the text is spoken, for the highlight: exact for the parts voiced so
+   * far, with the rest spread over the time they're estimated to take.
+   */
+  anchors(): [number, number][] {
+    const total = this.estimatedMs();
+    const knownMs = this.durations.reduce<number>((n, d) => n + (d ?? 0), 0);
+    const restChars = this.parts.reduce((n, p, i) => n + (this.durations[i] === undefined ? p.end - p.start : 0), 0);
+    const out: [number, number][] = [];
+    let at = 0;
+    this.parts.forEach((p, i) => {
+      const length = this.durations[i] ?? (restChars ? ((p.end - p.start) / restChars) * Math.max(total - knownMs, 0) : 0);
+      out.push([p.start, Math.round(at)], [p.end, Math.round(at + length)]);
+      at += length;
+    });
+    return out;
+  }
+
   /** Every part is voiced */
   get complete() {
     return this.durations.filter((d) => d !== undefined).length === this.parts.length;

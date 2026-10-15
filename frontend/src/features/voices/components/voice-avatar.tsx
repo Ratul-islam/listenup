@@ -1,16 +1,19 @@
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Check, Smartphone } from 'lucide-react-native';
+import { Check, Mic, Smartphone } from 'lucide-react-native';
 import { useEffect } from 'react';
 import { View } from 'react-native';
 import Animated, { cancelAnimation, useAnimatedStyle, useReducedMotion, useSharedValue, withDelay, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 
 import { Text } from '@/components/ui/text';
+import { useAuthStore } from '@/features/auth/store/auth.store';
 import type { Lang } from '@/lib/languages';
 import { useTokens } from '@/lib/use-tokens';
 
 import { initials } from '../voice-catalog';
+import { VOICE_FACES } from '../voice-faces';
 
-// Soft two-tone gradients; each voice keeps the same one everywhere
+// For a voice without a picture: soft two-tone gradients; each keeps the same one everywhere
 const GRADIENTS: [string, string][] = [
   ['#9b8cff', '#6a55e0'],
   ['#f9a8d4', '#db2777'],
@@ -23,42 +26,67 @@ const GRADIENTS: [string, string][] = [
 ];
 const PHONE_GRADIENT: [string, string] = ['#cbd5e1', '#64748b'];
 
+const OWN_GRADIENT: [string, string] = ['#9b8cff', '#6a55e0'];
+
 const gradientFor = (key: string) => GRADIENTS[[...key].reduce((n, c) => n + c.charCodeAt(0), 0) % GRADIENTS.length];
+
+/** The listener's own voice ("mine", "mine-bn"): it wears their account picture */
+const isOwn = (id?: string) => id === 'mine' || !!id?.startsWith('mine-');
+
+/** A built-in voice's picture, found by its id, or by its name where only that is known */
+const faceOf = (id: string | undefined, name: string) => VOICE_FACES[id ?? ''] ?? VOICE_FACES[name.toLowerCase()];
 
 interface VoiceAvatarProps {
   name: string;
-  /** Picks the gradient; the name is used when it's left out */
+  /** Picks the picture; the name is used when it's left out */
   id?: string;
   language?: Lang;
   size?: number;
-  /** A phone voice: a phone glyph on grey instead of initials */
+  /** A phone voice: a phone glyph on grey instead of a face */
   phone?: boolean;
-  /** Its preview is playing: initials give way to a moving waveform */
+  /** Its preview is playing: a moving waveform over the face */
   speaking?: boolean;
   /** Shows a check badge */
   selected?: boolean;
 }
 
-/** A voice's face: initials on its own gradient, a little waveform while it speaks */
+/**
+ * A voice's face: its drawn portrait, the listener's own picture for their own
+ * voice, a phone for the phone's voice, and initials for a voice with no
+ * picture yet. A little waveform plays over it while it speaks.
+ */
 export function VoiceAvatar({ name, id, size = 44, phone, speaking, selected }: VoiceAvatarProps) {
   const t = useTokens();
-  const colors = phone ? PHONE_GRADIENT : gradientFor(id ?? name);
+  const own = isOwn(id);
+  const myPicture = useAuthStore((s) => (own ? s.user?.avatarUrl : null));
+  const face = phone || own ? null : faceOf(id, name);
+  const picture = face ?? (myPicture ? { uri: myPicture } : null);
+  const colors = phone ? PHONE_GRADIENT : own ? OWN_GRADIENT : gradientFor(id ?? name);
+  const round = { width: size, height: size, borderRadius: size / 2 };
   return (
     <View style={{ width: size, height: size }}>
-      <LinearGradient
-        colors={colors}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={{ width: size, height: size, borderRadius: size / 2, alignItems: 'center', justifyContent: 'center' }}
-      >
-        {speaking ? (
-          <MiniWave height={size * 0.42} />
-        ) : phone ? (
-          <Smartphone size={size * 0.42} color="#ffffff" />
-        ) : (
-          <Text className="font-bold text-white" style={{ fontSize: size * 0.36 }}>{initials(name)}</Text>
-        )}
-      </LinearGradient>
+      {picture ? (
+        <View style={[round, { overflow: 'hidden', backgroundColor: t.accentSoftBg }]}>
+          <Image source={picture} style={{ width: size, height: size }} contentFit="cover" accessibilityIgnoresInvertColors />
+          {speaking ? (
+            <View className="absolute inset-0 items-center justify-center" style={{ backgroundColor: 'rgba(27, 28, 46, 0.45)' }}>
+              <MiniWave height={size * 0.42} />
+            </View>
+          ) : null}
+        </View>
+      ) : (
+        <LinearGradient colors={colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[round, { alignItems: 'center', justifyContent: 'center' }]}>
+          {speaking ? (
+            <MiniWave height={size * 0.42} />
+          ) : phone ? (
+            <Smartphone size={size * 0.42} color="#ffffff" />
+          ) : own ? (
+            <Mic size={size * 0.42} color="#ffffff" />
+          ) : (
+            <Text className="font-bold text-white" style={{ fontSize: size * 0.36 }}>{initials(name)}</Text>
+          )}
+        </LinearGradient>
+      )}
       {selected ? (
         <View
           className="absolute items-center justify-center rounded-full bg-accent"

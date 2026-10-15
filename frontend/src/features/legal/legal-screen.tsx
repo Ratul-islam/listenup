@@ -8,11 +8,11 @@ import { Text } from '@/components/ui/text';
 
 import { LAST_UPDATED, LEGAL } from './content';
 
-/** Terms of service or privacy policy, as plain readable text */
+/** Terms of service, privacy policy or the community rules, as plain readable text */
 export default function LegalScreen() {
   const insets = useSafeAreaInsets();
   const { doc } = useLocalSearchParams<{ doc: string }>();
-  const page = LEGAL[doc === 'privacy' ? 'privacy' : 'terms'];
+  const page = LEGAL[doc === 'privacy' || doc === 'community' ? doc : 'terms'];
 
   return (
     <CloudBackground>

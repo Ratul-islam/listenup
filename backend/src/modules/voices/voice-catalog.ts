@@ -27,6 +27,15 @@ export interface VoiceDefinition {
   expressive: boolean
   /** Accent direction appended to every delivery style, e.g. "in a British English accent" */
   accentStyle?: string
+  /** A listener's own cloned voice: only Google makes it, and its audio is never shared */
+  own?: boolean
+  /**
+   * What cached audio is filed under, in place of `providerVoice`: an own voice
+   * gets a new id at Google when it's renewed, and its audio is still good
+   */
+  cacheKey?: string
+  /** A speaker's voice cloned for one voice translation: offered only in that document */
+  forDocument?: string
 }
 
 // Model name for phone voices, which the app voices itself
@@ -77,10 +86,22 @@ export const VOICES: VoiceDefinition[] = [
   voice({ id: 'atlas', name: 'Atlas', language: 'en', accent: 'American', style: 'Deep & steady', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Alnilam', accentStyle: american }),
   voice({ id: 'eleanor', name: 'Eleanor', language: 'en', accent: 'British', style: 'Warm studio', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Despina', accentStyle: british }),
   voice({ id: 'oliver', name: 'Oliver', language: 'en', accent: 'British', style: 'Calm narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Schedar', accentStyle: british }),
+  // More choice (Oct 2026): Google's four voices nothing used yet are men, so English gets three of them and one more woman
+  voice({ id: 'leo', name: 'Leo', language: 'en', accent: 'American', style: 'Upbeat & friendly', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Puck', accentStyle: american }),
+  voice({ id: 'sam', name: 'Sam', language: 'en', accent: 'American', style: 'Casual & relaxed', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Zubenelgenubi', accentStyle: american }),
+  voice({ id: 'henry', name: 'Henry', language: 'en', accent: 'British', style: 'Knowledgeable', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Sadaltager', accentStyle: british }),
+  voice({ id: 'lily', name: 'Lily', language: 'en', accent: 'American', style: 'Young & lively', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Leda', accentStyle: american }),
   phone('en'),
   voice({ id: 'nusrat', name: 'Nusrat', language: 'bn', accent: 'Bangla', style: 'Soft & clear', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Kore' }),
   voice({ id: 'rafi', name: 'Rafi', language: 'bn', accent: 'Bangla', style: 'Warm storyteller', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Charon' }),
   voice({ id: 'tanisha', name: 'Tanisha', language: 'bn', accent: 'Bangla', style: 'Bright & expressive', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Aoede' }),
+  // More choice (Oct 2026): every Google voice reads Bangla. Of 17 tried on the same sentence, an audio model
+  // rated each 4 or 5 of 5 for a native accent (these three included) and natural in every take
+  voice({ id: 'riya', name: 'Riya', language: 'bn', accent: 'Bangla', style: 'Young & lively', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Leda' }),
+  voice({ id: 'sadia', name: 'Sadia', language: 'bn', accent: 'Bangla', style: 'Soft & gentle', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Achernar' }),
+  voice({ id: 'tanvir', name: 'Tanvir', language: 'bn', accent: 'Bangla', style: 'Upbeat & friendly', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Puck' }),
+  voice({ id: 'imran', name: 'Imran', language: 'bn', accent: 'Bangla', style: 'Deep & smooth', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Algieba' }),
+  voice({ id: 'arif', name: 'Arif', language: 'bn', accent: 'Bangla', style: 'Clear narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Iapetus' }),
   phone('bn'),
 
   // Hindi, Spanish, Portuguese (Brazil) and French: Natural voices are the default
@@ -88,20 +109,28 @@ export const VOICES: VoiceDefinition[] = [
   voice({ id: 'kabir', name: 'Kabir', language: 'hi', accent: 'Hindi', style: 'Calm & steady', gender: 'male', tier: 'natural', model: standard, providerVoice: 'hm_psi' }),
   voice({ id: 'meera', name: 'Meera', language: 'hi', accent: 'Hindi', style: 'Soft & expressive', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Leda', accentStyle: hindi }),
   voice({ id: 'arnav', name: 'Arnav', language: 'hi', accent: 'Hindi', style: 'Warm storyteller', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Iapetus', accentStyle: hindi }),
+  voice({ id: 'ananya', name: 'Ananya', language: 'hi', accent: 'Hindi', style: 'Soft & clear', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Achernar', accentStyle: hindi }),
+  voice({ id: 'rohan', name: 'Rohan', language: 'hi', accent: 'Hindi', style: 'Warm & deep', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Charon', accentStyle: hindi }),
   phone('hi'),
   voice({ id: 'lucia', name: 'Lucía', language: 'es', accent: 'Spanish', style: 'Bright & clear', gender: 'female', tier: 'natural', model: standard, providerVoice: 'ef_dora' }),
   voice({ id: 'mateo', name: 'Mateo', language: 'es', accent: 'Spanish', style: 'Calm & steady', gender: 'male', tier: 'natural', model: standard, providerVoice: 'em_alex' }),
   voice({ id: 'valeria', name: 'Valeria', language: 'es', accent: 'Latin American', style: 'Warm & expressive', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Callirrhoe', accentStyle: spanish }),
   voice({ id: 'diego', name: 'Diego', language: 'es', accent: 'Latin American', style: 'Deep storyteller', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Orus', accentStyle: spanish }),
+  voice({ id: 'sofia', name: 'Sofía', language: 'es', accent: 'Latin American', style: 'Firm & clear', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Kore', accentStyle: spanish }),
+  voice({ id: 'javier', name: 'Javier', language: 'es', accent: 'Latin American', style: 'Upbeat & friendly', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Puck', accentStyle: spanish }),
   phone('es'),
   voice({ id: 'beatriz', name: 'Beatriz', language: 'pt', accent: 'Brazilian', style: 'Bright & clear', gender: 'female', tier: 'natural', model: standard, providerVoice: 'pf_dora' }),
   voice({ id: 'thiago', name: 'Thiago', language: 'pt', accent: 'Brazilian', style: 'Calm & steady', gender: 'male', tier: 'natural', model: standard, providerVoice: 'pm_alex' }),
   voice({ id: 'luana', name: 'Luana', language: 'pt', accent: 'Brazilian', style: 'Warm & expressive', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Laomedeia', accentStyle: portuguese }),
   voice({ id: 'rafael', name: 'Rafael', language: 'pt', accent: 'Brazilian', style: 'Friendly storyteller', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Algieba', accentStyle: portuguese }),
+  voice({ id: 'camila', name: 'Camila', language: 'pt', accent: 'Brazilian', style: 'Warm & natural', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Sulafat', accentStyle: portuguese }),
+  voice({ id: 'gabriel', name: 'Gabriel', language: 'pt', accent: 'Brazilian', style: 'Clear narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Iapetus', accentStyle: portuguese }),
   phone('pt'),
   voice({ id: 'camille', name: 'Camille', language: 'fr', accent: 'French', style: 'Soft & clear', gender: 'female', tier: 'natural', model: standard, providerVoice: 'ff_siwis' }),
   voice({ id: 'elise', name: 'Élise', language: 'fr', accent: 'French', style: 'Warm & expressive', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Erinome', accentStyle: french }),
   voice({ id: 'louis', name: 'Louis', language: 'fr', accent: 'French', style: 'Calm narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Algenib', accentStyle: french }),
+  voice({ id: 'chloe', name: 'Chloé', language: 'fr', accent: 'French', style: 'Young & lively', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Leda', accentStyle: french }),
+  voice({ id: 'hugo', name: 'Hugo', language: 'fr', accent: 'French', style: 'Warm storyteller', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Charon', accentStyle: french }),
   phone('fr'),
 
   // Italian, Japanese, Mandarin, Urdu and Indonesian (Oct 2026). Kokoro has no Urdu or
@@ -110,22 +139,32 @@ export const VOICES: VoiceDefinition[] = [
   voice({ id: 'nicola', name: 'Nicola', language: 'it', accent: 'Italian', style: 'Calm & steady', gender: 'male', tier: 'natural', model: standard, providerVoice: 'im_nicola' }),
   voice({ id: 'giulia', name: 'Giulia', language: 'it', accent: 'Italian', style: 'Gentle & warm', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Vindemiatrix', accentStyle: italian }),
   voice({ id: 'marco', name: 'Marco', language: 'it', accent: 'Italian', style: 'Clear narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Rasalgethi', accentStyle: italian }),
+  voice({ id: 'chiara', name: 'Chiara', language: 'it', accent: 'Italian', style: 'Soft & clear', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Achernar', accentStyle: italian }),
+  voice({ id: 'luca', name: 'Luca', language: 'it', accent: 'Italian', style: 'Upbeat & friendly', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Puck', accentStyle: italian }),
   phone('it'),
   voice({ id: 'hana', name: 'Hana', language: 'ja', accent: 'Japanese', style: 'Soft & clear', gender: 'female', tier: 'natural', model: standard, providerVoice: 'jf_alpha' }),
   voice({ id: 'ken', name: 'Ken', language: 'ja', accent: 'Japanese', style: 'Calm & steady', gender: 'male', tier: 'natural', model: standard, providerVoice: 'jm_kumo' }),
   voice({ id: 'yui', name: 'Yui', language: 'ja', accent: 'Japanese', style: 'Bright & clear', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Autonoe', accentStyle: japanese }),
   voice({ id: 'haruto', name: 'Haruto', language: 'ja', accent: 'Japanese', style: 'Easygoing narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Umbriel', accentStyle: japanese }),
+  voice({ id: 'sakura', name: 'Sakura', language: 'ja', accent: 'Japanese', style: 'Calm & clear', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Kore', accentStyle: japanese }),
+  voice({ id: 'ren', name: 'Ren', language: 'ja', accent: 'Japanese', style: 'Clear narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Iapetus', accentStyle: japanese }),
   phone('ja'),
   voice({ id: 'xiaoxiao', name: 'Xiaoxiao', language: 'zh', accent: 'Mandarin', style: 'Warm & clear', gender: 'female', tier: 'natural', model: standard, providerVoice: 'zf_xiaoxiao' }),
   voice({ id: 'yunxi', name: 'Yunxi', language: 'zh', accent: 'Mandarin', style: 'Calm & steady', gender: 'male', tier: 'natural', model: standard, providerVoice: 'zm_yunxi' }),
   voice({ id: 'mei', name: 'Mei', language: 'zh', accent: 'Mandarin', style: 'Clear & confident', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Pulcherrima', accentStyle: mandarin }),
   voice({ id: 'wei', name: 'Wei', language: 'zh', accent: 'Mandarin', style: 'Soft narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Enceladus', accentStyle: mandarin }),
+  voice({ id: 'lin', name: 'Lin', language: 'zh', accent: 'Mandarin', style: 'Young & bright', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Leda', accentStyle: mandarin }),
+  voice({ id: 'jun', name: 'Jun', language: 'zh', accent: 'Mandarin', style: 'Warm & deep', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Charon', accentStyle: mandarin }),
   phone('zh'),
   voice({ id: 'ayesha', name: 'Ayesha', language: 'ur', accent: 'Urdu', style: 'Soft & clear', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Achernar', accentStyle: urdu }),
   voice({ id: 'bilal', name: 'Bilal', language: 'ur', accent: 'Urdu', style: 'Lively storyteller', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Sadachbia', accentStyle: urdu }),
+  voice({ id: 'sana', name: 'Sana', language: 'ur', accent: 'Urdu', style: 'Firm & clear', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Kore', accentStyle: urdu }),
+  voice({ id: 'hamza', name: 'Hamza', language: 'ur', accent: 'Urdu', style: 'Clear narrator', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Iapetus', accentStyle: urdu }),
   phone('ur'),
   voice({ id: 'sari', name: 'Sari', language: 'id', accent: 'Indonesian', style: 'Warm & mature', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Gacrux', accentStyle: indonesian }),
   voice({ id: 'budi', name: 'Budi', language: 'id', accent: 'Indonesian', style: 'Friendly & clear', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Achird', accentStyle: indonesian }),
+  voice({ id: 'dewi', name: 'Dewi', language: 'id', accent: 'Indonesian', style: 'Soft & gentle', gender: 'female', tier: 'expressive', model: multilingual, providerVoice: 'Achernar', accentStyle: indonesian }),
+  voice({ id: 'rizky', name: 'Rizky', language: 'id', accent: 'Indonesian', style: 'Upbeat & friendly', gender: 'male', tier: 'expressive', model: multilingual, providerVoice: 'Puck', accentStyle: indonesian }),
   phone('id'),
 ]
 
@@ -145,7 +184,11 @@ export const DEFAULT_VOICE: Record<Lang, string> = {
 
 const byId = new Map(VOICES.map((v) => [v.id, v]))
 
+/** A built-in voice. A listener's own voice isn't in the catalog: see VoicesService.find() */
 export const findVoice = (id: string | null | undefined) => (id ? byId.get(id) : undefined)
+
+/** What identifies a voice's sound in cache keys */
+export const soundOf = (voice: VoiceDefinition) => voice.cacheKey ?? voice.providerVoice
 
 const deviceSpeakers = new Set<string>(ON_DEVICE_MODEL.speakers)
 

@@ -1,3 +1,4 @@
+import './config/network.js'
 import { connectDB, disconnectDB } from './config/db.js'
 import { env, ttsProviderName } from './config/env.js'
 import { queue, startQueue } from './lib/queue.js'

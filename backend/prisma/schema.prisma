@@ -10,6 +10,10 @@ datasource db {
 model User {
   id                     String    @id @default(uuid())
   email                  String    @unique
+  // One key per real inbox (lower case, "+tag" dropped, Gmail's dots dropped; utils/email-key.ts):
+  // stops one person opening many accounts for invite and contest rewards. Not unique: older
+  // accounts made before it may share one. Null only for rows made outside the app
+  emailKey               String?
   // Null for accounts that only sign in through an OAuth provider
   passwordHash           String?
   name                   String?
@@ -37,27 +41,48 @@ model User {
   podcastToken           String?   @unique
   // Set when the user closes their account; signing in within 30 days clears it, after that it is erased
   closedAt               DateTime?
+  // Name shown on what they publish in Explore's Community; unique ignoring case (penNameKey)
+  penName                String?
+  penNameKey             String?   @unique
+  // When they agreed to the community rules (on first publishing)
+  communityRulesAt       DateTime?
+  // The phone's time zone ("Asia/Dhaka"), as the app reports it: places users without a
+  // store country (Free) in a region for ad and invite rewards
+  timeZone               String?
+  // Listening time is credited no faster than the clock runs: reports up to this moment are
+  // already counted (playback.service.ts creditListening)
+  listenCreditedUntil    DateTime?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
-  oauthAccounts OAuthAccount[]
-  refreshTokens RefreshToken[]
-  otps          Otp[]
-  documents     Document[]
-  playback      PlaybackState[]
-  bookmarks     Bookmark[]
-  listeningDays ListeningDay[]
-  usageMonths   UsageMonth[]
-  preference    UserPreference?
-  folders       Folder[]
-  pronunciations Pronunciation[]
-  studioPacks   StudioPackPurchase[]
-  adRewards     AdReward[]
-  invitedBy     User?                @relation("Invites", fields: [invitedById], references: [id], onDelete: SetNull)
-  invitees      User[]               @relation("Invites")
+  oauthAccounts      OAuthAccount[]
+  refreshTokens      RefreshToken[]
+  otps               Otp[]
+  documents          Document[]
+  playback           PlaybackState[]
+  bookmarks          Bookmark[]
+  listeningDays      ListeningDay[]
+  usageMonths        UsageMonth[]
+  preference         UserPreference?
+  ownVoice           OwnVoice?
+  speakerVoices      SpeakerVoice[]
+  folders            Folder[]
+  pronunciations     Pronunciation[]
+  studioPacks        StudioPackPurchase[]
+  adRewards          AdReward[]
+  invitedBy          User?                @relation("Invites", fields: [invitedById], references: [id], onDelete: SetNull)
+  invitees           User[]               @relation("Invites")
+  publications       Publication[]
+  publicationVotes   PublicationVote[]
+  publicationReports PublicationReport[]
+  blocks             UserBlock[]          @relation("Blocker")
+  blockedBy          UserBlock[]          @relation("Blocked")
+  contestWins        ContestWin[]
+  spendDays          UserSpendDay[]
 
   @@index([closedAt])
   @@index([invitedById])
+  @@index([emailKey])
   @@map("users")
 }
 
@@ -203,10 +228,19 @@ model Document {
   narrationStrength    String?
   // What "Make it expressive" learned: { style, narrator, characters: [{ name, voice }] }
   narrationBrief       Json?
+  // How a creator produces it (Studio): { platform, type, tone, speed, pitch }, and for a voice
+  // translation { translation: { from, to, transcript, sourceKey, durationSec, status, error } }
+  studio               Json?
+  // A listener's copy of a writing from Explore's Community; goes when the writer unpublishes it
+  publicationId        String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
 
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publication    Publication?     @relation("PublicationCopies", fields: [publicationId], references: [id], onDelete: Cascade)
+  // The frozen copy behind a publication (the writer's, never on a shelf or in Studio)
+  masterOf       Publication?     @relation("PublicationMaster")
+  publishedAs    Publication[]    @relation("PublicationSource")
   folder         Folder?          @relation(fields: [folderId], references: [id], onDelete: SetNull)
   translatedFrom Document?        @relation("Translations", fields: [translatedFromId], references: [id], onDelete: SetNull)
   translations   Document[]       @relation("Translations")
@@ -216,18 +250,20 @@ model Document {
   export         AudioExport?
   offline        OfflineDownload?
   studyAids      StudyAid[]
+  speakerVoice   SpeakerVoice?
 
   @@unique([userId, digestDay])
   @@index([userId, isScript, createdAt])
   @@index([userId, createdAt])
   @@index([userId, folderId])
   @@index([userId, podcastAddedAt])
+  @@index([publicationId])
   @@map("documents")
 }
 
 // The unit of speech generation: a few sentences in one language.
 model DocumentChunk {
-  id                   String @id @default(uuid())
+  id                   String  @id @default(uuid())
   documentId           String
   index                Int
   text                 String
@@ -240,17 +276,19 @@ model DocumentChunk {
   // The document's narration direction as voiced ("a tense, hushed storyteller…"); null for plain
   narration            String?
   // Bumped by "New take": the same text voiced again, as a fresh recording
-  take                 Int                   @default(0)
+  take                 Int     @default(0)
   // "Redo this sentence": { "<sentence index>": take }; those sentences are recorded alone and spliced in
   sentenceTakes        Json?
   // This part's own voice (a character), instead of the document's voice for its language
   voiceId              String?
   // Silence after this part in the MP3, subtitles and player
-  pauseAfterMs         Int                   @default(0)
+  pauseAfterMs         Int     @default(0)
   // Locked parts keep their recording: AI direction, narration and new pronunciations leave them alone
-  locked               Boolean               @default(false)
+  locked               Boolean @default(false)
   // What a locked part keeps: { rules: [{ word, sayAs }], pinnedVoice? }
   lockedLexicon        Json?
+  // The script's voice settings, copied to each part it covers: { tone, speed, pitch } (a locked part keeps its own)
+  delivery             Json?
   estimatedDurationSec Float
 
   document Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -268,27 +306,27 @@ enum AudioStatus {
 
 // Cached speech for one chunk in one voice
 model AudioClip {
-  id         String      @id @default(uuid())
-  chunkId    String
-  voiceId    String
-  status     AudioStatus @default(GENERATING)
-  storageKey String?
-  mimeType   String?
-  durationMs Int?
-  charCount  Int         @default(0)
-  provider   String
-  model      String
+  id            String      @id @default(uuid())
+  chunkId       String
+  voiceId       String
+  status        AudioStatus @default(GENERATING)
+  storageKey    String?
+  mimeType      String?
+  durationMs    Int?
+  charCount     Int         @default(0)
+  provider      String
+  model         String
   // Fingerprint of what was voiced (text, voice, emotions); a change means regenerate
-  renderKey  String?
+  renderKey     String?
   // Shared audio file this clip plays; null for clips made before audio was shared
-  blobHash   String?
+  blobHash      String?
   // The render key of the whole-part recording underneath any redone sentences
-  baseKey    String?
+  baseKey       String?
   // Which sentence takes this audio already has spliced in: { "<sentence index>": take }
   sentenceTakes Json?
-  error      String?
-  createdAt  DateTime    @default(now())
-  updatedAt  DateTime    @updatedAt
+  error         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   chunk DocumentChunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)
   blob  AudioBlob?    @relation(fields: [blobHash], references: [hash])
@@ -314,7 +352,9 @@ model AudioBlob {
   peaks      Json?
   createdAt  DateTime @default(now())
 
-  clips AudioClip[]
+  clips        AudioClip[]
+  // Voice clips in Explore keep their audio while they're published
+  publications Publication[]
 
   @@map("audio_blobs")
 }
@@ -397,6 +437,8 @@ model PlaybackState {
   offsetMs    Int       @default(0)
   voiceId     String?
   speed       Float     @default(1)
+  // Seconds really played, as the app reports them; a heart in Explore's contest needs some
+  listenedSec Int       @default(0)
   completedAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -450,6 +492,10 @@ model UsageMonth {
   translatedChars Int    @default(0)
   // Extra Natural seconds earned this month by watching rewarded ads (Free)
   bonusNaturalSec Int    @default(0)
+  // Pages read with OCR (scans, photos, legacy-font PDFs) this month; Free has a cap
+  ocrPages        Int    @default(0)
+  // Daily digests written this month; Free has a cap
+  digests         Int    @default(0)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -507,6 +553,20 @@ model SpendDay {
   @@map("spend_days")
 }
 
+// What one Free account spent of the Free budget on a day (UTC). Each has a small
+// share (FREE_USER_DAILY_SPEND_USD), so one account can't use up the day for everyone
+model UserSpendDay {
+  userId     String
+  day        String
+  // Millionths of a US dollar
+  costMicros Int    @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, day])
+  @@map("user_spend_days")
+}
+
 // How the listener wants a word said ("Ratul" → "Rah-tool"), applied to every voice
 // and every document of theirs until changed
 model Pronunciation {
@@ -538,4 +598,221 @@ model UserPreference {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_preferences")
+}
+
+// A listener's own voice, cloned from a short recording (Pro). One per account,
+// private to it, and erased when they delete it or the account.
+model OwnVoice {
+  id                String    @id @default(uuid())
+  userId            String    @unique
+  name              String
+  // Google's id for the voice ("voice_…"); null while none could be made
+  providerVoiceId   String?
+  model             String
+  // Goes up with each new recording, so audio made with an older one is made again
+  version           Int       @default(0)
+  // The language the consent sentence was read in, and when
+  consentLanguage   String?
+  consentedAt       DateTime?
+  // The two recordings, kept privately: Google keeps a voice for a year, and it's renewed from these
+  sourceKey         String?
+  consentKey        String?
+  providerCreatedAt DateTime?
+  // Recordings sent to Google in `attemptsPeriod` ("YYYY-MM"); there's a monthly limit
+  attemptsPeriod    String?
+  attempts          Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("own_voices")
+}
+
+// The voice of whoever speaks in a recording sent for voice translation (Pro), cloned so the
+// translation is said in their voice. Made only after that speaker records Google's consent
+// sentence; private to the account, and erased with the translation or the account.
+model SpeakerVoice {
+  id                String    @id @default(uuid())
+  userId            String
+  documentId        String    @unique
+  // Google's id for the voice ("voice_…"); null until it's made
+  providerVoiceId   String?
+  model             String
+  // Goes up with each new consent recording, so audio made with an older voice is made again
+  version           Int       @default(0)
+  consentLanguage   String?
+  consentedAt       DateTime?
+  // The stretch of the recording it was made from, and the consent sentence, kept privately
+  sourceKey         String?
+  consentKey        String?
+  providerCreatedAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("speaker_voices")
+}
+
+enum PublicationKind {
+  WRITING
+  CLIP
+}
+
+enum PublicationStatus {
+  // The AI check, and voicing a writing, are running
+  CHECKING
+  LIVE
+  // Reported by several listeners; out of Explore until reviewed
+  HIDDEN
+  // The AI check turned it down
+  REJECTED
+  // Taken down after review
+  REMOVED
+  // Couldn't be made ready (e.g. the writer ran out of minutes); can be tried again
+  FAILED
+}
+
+// Something a user published to Explore's Community: a writing, voiced the way
+// they set it up, or a short voice clip (a line or paragraph)
+model Publication {
+  id           String            @id @default(uuid())
+  userId       String
+  kind         PublicationKind
+  status       PublicationStatus @default(CHECKING)
+  // For the writer: why the check or a review turned it down, or why it isn't ready
+  statusNote   String?
+  title        String
+  // A language from LANGS, or "mixed"
+  language     String
+  // The voice it's heard in, as the writer chose
+  voiceId      String
+  excerpt      String
+  // A clip's words; a writing's text is in its frozen copy
+  text         String?
+  // Who wrote a quoted clip ("Rabindranath Tagore"); null when it's the publisher's own
+  credit       String?
+  charCount    Int
+  durationSec  Int
+  // The document it was published from
+  sourceId     String?
+  // Writings: the frozen copy every listener's copy is made from, voiced once at the writer's cost
+  masterId     String?           @unique
+  // Clips: the audio
+  blobHash     String?
+  // Writings: the cover image its writer chose, in storage; null for the drawn cover
+  coverKey     String?
+  // "YYYY-MM" when entered in that month's contest; one entry per writer a month
+  contestMonth String?
+  hearts       Int               @default(0)
+  // Listeners who added a writing to their shelf, or plays of a clip
+  listens      Int               @default(0)
+  // Reports since it was last reviewed; enough of them hide it
+  reports      Int               @default(0)
+  publishedAt  DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  user   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  source Document?           @relation("PublicationSource", fields: [sourceId], references: [id], onDelete: SetNull)
+  master Document?           @relation("PublicationMaster", fields: [masterId], references: [id], onDelete: Cascade)
+  blob   AudioBlob?          @relation(fields: [blobHash], references: [hash], onDelete: SetNull)
+  copies Document[]          @relation("PublicationCopies")
+  votes  PublicationVote[]
+  flags  PublicationReport[]
+  wins   ContestWin[]
+
+  @@unique([userId, contestMonth])
+  @@index([status, kind, publishedAt])
+  @@index([contestMonth, status])
+  @@index([userId, createdAt])
+  @@index([sourceId])
+  @@index([blobHash])
+  @@map("publications")
+}
+
+// A heart. In the contest it counts only from verified, week-old accounts (see ContestService)
+model PublicationVote {
+  publicationId String
+  userId        String
+  createdAt     DateTime @default(now())
+
+  publication Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([publicationId, userId])
+  @@index([userId])
+  @@map("publication_votes")
+}
+
+model PublicationReport {
+  publicationId String
+  userId        String
+  // spam | hate | sexual | violence | copied | private | other
+  reason        String
+  note          String?
+  createdAt     DateTime @default(now())
+
+  publication Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([publicationId, userId])
+  @@map("publication_reports")
+}
+
+// A writer someone doesn't want to see in Explore any more
+model UserBlock {
+  userId    String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  user    User @relation("Blocker", fields: [userId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@id([userId, blockedId])
+  @@index([blockedId])
+  @@map("user_blocks")
+}
+
+// A month's writing contest ("YYYY-MM", UTC): its theme, and when its prizes went out
+model Contest {
+  month     String    @id
+  theme     String?
+  settledAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  wins ContestWin[]
+
+  @@map("contests")
+}
+
+// A prize: a place on a board, and the Expressive minutes it gave
+model ContestWin {
+  id            String    @id @default(uuid())
+  month         String
+  // "bn" | "en" | "other"
+  board         String
+  place         Int
+  publicationId String?
+  userId        String
+  // As they were when it won, in case the writing is unpublished later
+  title         String
+  penName       String
+  hearts        Int
+  seconds       Int
+  // When the winner saw it in the app
+  seenAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  contest     Contest      @relation(fields: [month], references: [month], onDelete: Cascade)
+  publication Publication? @relation(fields: [publicationId], references: [id], onDelete: SetNull)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([month, board, place])
+  @@index([userId])
+  @@map("contest_wins")
 }

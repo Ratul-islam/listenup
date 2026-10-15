@@ -1,3 +1,4 @@
+import './config/network.js'
 import { buildApp } from './application.js'
 import { env } from './config/env.js'
 

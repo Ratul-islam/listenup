@@ -11,16 +11,19 @@ export class InvitesRepository {
         inviteCode: true,
         invitedById: true,
         inviteRewardedAt: true,
+        emailKey: true,
         emailVerifiedAt: true,
         createdAt: true,
         closedAt: true,
-        invitedBy: { select: { id: true, name: true, invitedById: true, closedAt: true } },
+        billingCountry: true,
+        timeZone: true,
+        invitedBy: { select: { id: true, name: true, emailKey: true, invitedById: true, closedAt: true, billingCountry: true, timeZone: true } },
       },
     })
   }
 
   findByCode(inviteCode: string) {
-    return this.db.user.findUnique({ where: { inviteCode }, select: { id: true, name: true, invitedById: true, closedAt: true } })
+    return this.db.user.findUnique({ where: { inviteCode }, select: { id: true, name: true, emailKey: true, invitedById: true, closedAt: true } })
   }
 
   /** Sets the user's code if they have none yet; false if another user already has it */
@@ -56,17 +59,17 @@ export class InvitesRepository {
 
   /**
    * Marks the invite rewarded and adds Expressive seconds to the friend, and to
-   * the inviter unless they've reached the most rewarded invites. The mark is
-   * conditional, so concurrent checks reward once.
+   * the inviter unless they've reached the most rewarded invites (each their
+   * own, by region). The mark is conditional, so concurrent checks reward once.
    */
-  async reward(inviteeId: string, inviterId: string | null, seconds: number) {
+  async reward(invitee: { id: string; seconds: number }, inviter: { id: string; seconds: number } | null) {
     return this.db.$transaction(async (tx) => {
       const { count } = await tx.user.updateMany({
-        where: { id: inviteeId, inviteRewardedAt: null },
-        data: { inviteRewardedAt: new Date(), bonusExpressiveSec: { increment: seconds } },
+        where: { id: invitee.id, inviteRewardedAt: null },
+        data: { inviteRewardedAt: new Date(), bonusExpressiveSec: { increment: invitee.seconds } },
       })
       if (count !== 1) return false
-      if (inviterId) await tx.user.update({ where: { id: inviterId }, data: { bonusExpressiveSec: { increment: seconds } } })
+      if (inviter) await tx.user.update({ where: { id: inviter.id }, data: { bonusExpressiveSec: { increment: inviter.seconds } } })
       return true
     })
   }

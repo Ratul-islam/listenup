@@ -63,12 +63,15 @@ These are estimates, assuming about 3–4 characters per token. Check them again
 |---|---|---|---|
 | Translation | All plans | 30k / 1M / 3M characters a month (same in every country) | **~$0.95 per million characters**, mostly output |
 | Make it expressive | Plus and Pro (since 5 Oct) | Directs only as far as the user's Expressive minutes reach (at least 20k characters, at most 400k) | Plus (Flash-Lite): ~$0.03 per 90 minutes of audio directed. Pro (Gemini 3.8 Flash, $0.75 in / $3.75 out): ~$0.08 |
+| Lines with a measured feeling (whisper since 11 Oct; angry, shout, sad and scared since 13 Oct) | Every plan, Expressive voices | A take that missed the feeling is made again: a whisper up to 3 takes, the others up to 3 for a feeling the listener set and up to 2 for one the AI suggested. The listener is charged for one | The model follows a style about half the time. A whisper now lands in about 8 takes of 10 (it's sent with the voice's own whisper mark), so it averages about 1.25 takes; the others about 1.5 to 1.75. A part where half the lines had such a feeling made 1.2 to 1.4 times the speech it kept. Other emotions are one take |
+| Bangla or Hindi typed in English letters (since 13 Oct) | Every plan, Expressive voices | Read by the larger voice model (`TTS_MODEL_TYPED`) | 1.5 times the usual voice cost for those parts: about $0.87 an hour now, $1.74 from January 2027. Counted as ordinary Expressive minutes, so it comes out of the margin |
 | Say it in your own words | All plans | 10 requests a minute | ~$0.0003 each |
+| Say it yourself (shaped to the recording since 13 Oct) | All plans, Expressive voices | One recording at a time, at most 45 seconds | One listen by the audio model (~$0.001), and three takes of the recorded words where there was one: for a 5-second line about $0.002 more than before. Charged to the listener as one take |
 | OCR (scanned and Bijoy PDFs, photos) | **All plans** | None | ~$0.0004 a page, so **~$0.12 for a 300-page book** |
 | Daily digest | All plans | 1 a day | ~$0.005 to write, plus voicing (counted in the allowance) |
 | Summary or quiz | Plus and Pro | None (each refresh is a new call) | ~$0.015 |
 
-**Daily caps cover voices only.** `FREE_DAILY_SPEND_CAP_USD` ($2) and `DAILY_SPEND_CAP_USD` ($25) count speech alone. None of the costs in the table above are capped.
+**Daily caps cover voices and text AI** (since 9 October). `FREE_DAILY_SPEND_CAP_USD` ($2) and `DAILY_SPEND_CAP_USD` ($25) count both, from OpenRouter's reported cost for text. Free also has 200 OCR pages and 8 digests a month, and translation is 250k (Plus) / 750k (Pro) in reduced-price countries.
 
 ### Fixed costs
 
@@ -227,13 +230,13 @@ In order of value for effort.
 
 | # | Fix | Where | What it saves |
 |---|---|---|---|
-| 1 | **A lower translation allowance in reduced-price countries:** for example 250k characters on Plus and 750k on Pro | `monthlyTranslateChars` in `plan-catalog.ts`, made per region like the voice allowances | Ends the −115% case. Translation's worst case in Bangladesh drops from $0.95 to ~$0.24 on Plus. |
-| 2 | **Count text-AI spending in the daily caps:** record every `chatCompletion` cost in `SpendDay`, like speech | `lib/openrouter.ts`, `budget.service.ts` | A bad day can't exceed the cap. You also see what each feature really costs. |
-| 3 | **Limit AI features on Free:** about 200 OCR pages a month, a digest every few days. (*Done for "Make it expressive": Plus and Pro only.*) | expressions, ingestion, documents services | Removes Free's unlimited costs. Tagging a whole book is wasted on Free, which only has 5 Expressive minutes. |
+| 1 | ✅ **Built 9 Oct: a lower translation allowance in reduced-price countries:** 250k characters on Plus and 750k on Pro | `monthlyTranslateChars` in `plan-catalog.ts`, made per region like the voice allowances | Ends the −115% case. Translation's worst case in Bangladesh drops from $0.95 to ~$0.24 on Plus. |
+| 2 | ✅ **Built 9 Oct: text-AI spending in the daily caps.** Every `chatCompletion` records OpenRouter's reported cost (+5.5%) in `SpendDay` and is refused once the day's cap is spent | `lib/openrouter.ts`, `budget.service.ts` | A bad day can't exceed the cap. You also see what each feature really costs. |
+| 3 | ✅ **Built 9 Oct: AI features capped on Free:** 200 OCR pages and 8 digests a month. ("Make it expressive" was already Plus and Pro only.) | expressions, ingestion, documents services | Removes Free's unlimited costs. Tagging a whole book is wasted on Free, which only has 5 Expressive minutes. |
 | 4 | ✅ **Done (5 Oct): Make it expressive only where it's heard.** It now directs only as far as the user's remaining Expressive minutes reach | `runAuto` in `expressions.service.ts` | Cuts most of the cost of each run |
 | 5 | ✅ **Decided 7 October: yearly plans at about 10 months:** Plus $39.99 / ৳1,490, Pro $89.99 / ৳3,990 (in [BILLING.md](backend/BILLING.md)) | Play Console, when you create the subscriptions | Typical yearly margins rise by 6–8 points. Heavy yearly losses shrink. |
-| 6 | **Rewarded ads by region:** keep 10 minutes in high-paying countries and give 3 minutes in reduced-price countries, or accept them as a cost of keeping users and measure whether they raise retention | `AD_REWARD_MINUTES` in `constants.ts` | Cuts the South Asia ad loss by about 70% |
-| 7 | **Invite rewards by region:** 5 Expressive minutes each in reduced-price countries, or Natural minutes instead | `INVITE_REWARD_MINUTES` in `constants.ts` | Halves the invite cost where it doesn't pay back |
+| 6 | ✅ **Built 9 Oct: rewarded ads by region:** 10 minutes in high-paying countries, 3 in reduced-price countries (Free users placed by the phone's time zone) | `AD_REWARD_MINUTES` in `constants.ts` | Cuts the South Asia ad loss by about 70% |
+| 7 | ✅ **Built 9 Oct: invite rewards by region:** 5 Expressive minutes for a person in a reduced-price country, 10 elsewhere | `INVITE_REWARD_MINUTES` in `constants.ts` | Halves the invite cost where it doesn't pay back |
 | 8 | **Enroll in Play's 15% fee tier** before selling Studio packs | Play Console | Keeps pack margins at 52–77% instead of 42–72% |
 | 9 | ✅ **Built 7 October: Google directly, with the half-price flex tier** for MP3 exports, offline downloads and podcast episodes. Needs `GEMINI_API_KEY`. | `lib/gemini.ts`, the speech provider | Expressive drops from $1.16 to $1.10 an hour for listening, and to ~$0.55 for exports when flex answers. If Google doesn't offer flex for speech, exports still save the 5.5%. |
 | 10 | **A bKash checkout on the web** (after the creator beta) | New web page | Saves Google's 15% on Bangladeshi payments, and lets most Bangladeshis pay at all |
@@ -241,12 +244,87 @@ In order of value for effort.
 | 12 | **Keep Bangla on phone voices after the trial,** and only offer Expressive Bangla as the paid upgrade | Already the behaviour after the trial | Keeps free Bangla listening at $0 |
 
 **Before 1 January 2027:**
-- Do fixes 1–4. They're small changes.
+- ✅ Fixes 1–7 are done, except 5 (set the yearly prices in Play Console) and 8 (enrol in Play's 15% tier).
 - Watch real usage on an owner dashboard (on hold). If typical paid use is above 35% of the Expressive allowance, cut Expressive minutes in reduced countries before the price doubles.
 
 ---
 
-## 7. Numbers to watch after launch
+## 7. Your own voice (Pro)
+
+Built 11 October 2026. A voice made from the listener's recording is made by the same model as Expressive voices, at the same price, so **a minute in it costs what an Expressive minute costs** ($1.16 an hour in 2027, about $1.10 from Google directly). It uses the Expressive allowance and Studio packs.
+
+- **Per minute, nothing changes.** Studio packs stay at 52–77%.
+- **The risk is usage.** People who make their own voice will probably use more of their Expressive minutes than the 35% assumed above. Pro monthly, with Natural use left at 35%:
+
+| Expressive minutes used | Pro global | Pro Bangladesh |
+|---|---|---|
+| 35% (the assumption above) | ✅ 69% | ✅ 61% |
+| 70% | ✅ 48% | 🟡 38% |
+| 100% | 🟡 30% | 🟡 20% |
+
+- **No shared cache:** audio in someone's own voice is theirs alone, so it's never paid for once across users.
+- **Each upgrade it brings:** a Plus subscriber who moves to Pro adds about $3 a month globally, or $1.10 in Bangladesh, at typical use.
+- **Not known yet:** whether making a voice costs anything (Google lists no price), and whether the half-price flex tier works with these voices. Recordings are limited to 5 a month per person either way.
+- **If Gemini's Bangla isn't good enough:** Cartesia is about $1.9–3.3 an hour, 2 to 3 times the cost. Own-voice minutes would then need their own, smaller allowance.
+
+---
+
+## 8. Google Cloud: where the audio is made, and what the $300 of credit buys (14 October 2026)
+
+Expressive voices are now made through Google Cloud's Vertex AI first, billed to the Cloud project and its ~$300 of credit (see [CHANGES.md](CHANGES.md)). The Vertex price below comes from third-party price lists, which match the key's; Google's own Vertex price page wasn't checked.
+
+### Expressive cost per hour, by where it's made
+
+| Where | Until 31 Dec 2026 | From 1 Jan 2027 |
+|---|---|---|
+| OpenRouter (Google's price + 5.5%) | $0.58 | $1.16 |
+| Vertex AI, or the Gemini API key | $0.55 | $1.10 |
+| The key's half-price flex tier (exports, downloads, podcast; needs Tier 2) | $0.27 | $0.55 |
+| Banglish parts (the larger model), Vertex or the key | $0.82 | $1.64 |
+
+- Lines with a feeling are measured and retaken when they miss, so a story with many of them makes **up to about 1.2× the audio** the listener is charged for. The estimates below include that.
+- **What we've spent so far** (4 to 14 October, two test accounts): 1.34 h of Expressive audio for $0.77 ($0.575 an hour, as expected), 1.2 h of Natural for $0.05, and $0.30 of text AI. Too little to say what a real listener uses.
+
+### What $300 covers
+
+- **Voices only:** about 550 hours of Expressive audio at today's price, or about 270 hours from January 2027.
+- **A server for the backend:** a Google Cloud **e2-small** (2 shared CPUs, 2 GB of memory; the load test peaked at 441 MB) in **Tokyo, next to the Supabase database**, with a fixed address and a 10 GB disk: about **$20 a month** (my estimate from list prices; check it in Google's pricing calculator). Hosting alone, $300 lasts about 15 months.
+- **Credits can expire.** Free-trial credit usually lasts 90 days. Whatever the table says, the runway ends on the expiry date shown under Billing, then Credits.
+
+### Runway: hosting ($20 a month) and voices together
+
+| Users in a month | Expressive hours a month | Cost a month (today's price → 2027) | $300 lasts |
+|---|---|---|---|
+| Testing and the closed test (12 testers) | ~6 | $24 → $28 | about 11–12 months |
+| 100 new sign-ups, 10 paying | ~13 | $28 → $37 | about 8–11 months |
+| 1,000 new sign-ups, 100 paying | ~127 | $104 → $187 | about 2–3 months |
+| 5,000 new sign-ups, 500 paying | ~635 | $439 → $857 | under a month |
+
+Assumptions: each sign-up uses the 5-minute Expressive trial; paying users use 35% of their Expressive minutes; the paying mix is half Bangladesh Plus, a fifth Bangladesh Pro, a fifth global Plus, a tenth global Pro. Natural voices (on the phone, or Kokoro at about $0.03 an hour) and text AI are left out; text AI was about a quarter of what we've spent so far, mostly "Make it expressive" on Pro.
+
+### What this means
+
+- **The credits are a one-time head start, not a better margin.** Once they're gone, Vertex costs the same as the key: 5.5% less than OpenRouter, which raises typical margins by about a point.
+- **Before launch, the expiry date matters more than the amount.** At testing levels the $300 can't be used up in 90 days. Anything that runs on Google's models can move to Vertex while the credit lasts: the server, "Make it expressive", reading scanned pages, translation, and the listening step in "Say it yourself".
+- **After launch, the credits cover the first 2–3 months at about 1,000 sign-ups a month.** Plan for cash after that.
+- **Moving the backend off Render** saves Render's $7 a month and puts the API next to the database (the load test's top fix). The costs: you look after the server yourself (updates, HTTPS, restarts), and **if the trial ends without upgrading the account to paid, Google stops the server.** Upgrade first; the remaining credit carries over.
+
+
+### Creator features (14 October 2026)
+
+| What | Cost | Who pays |
+|---|---|---|
+| Speed and pitch on a script | Nothing extra to make: about 70 ms of server time for 7 s of speech. The audio is longer at a slower speed, so a 0.85× script uses about 18% more minutes | The listener's minutes |
+| Platform loudness on an export | About 3.5 s of server time for 4.5 minutes; nothing per minute | Us (server time) |
+| Voice translation: writing down and translating | About $0.04 for 10 minutes of recording (one listen by Gemini 3.8 Flash, estimated) | Us, counted in the daily caps |
+| Voice translation: the speaker's voice reading it | Same as an Expressive minute | The listener's Expressive minutes |
+| Making a speaker's voice, and renewing it weekly | Google lists no price | Us |
+
+- **20 translations a month** caps the listening cost at about $0.80 a Pro user a month, against Pro's $7.64 (global) or $2.76 (Bangladesh) after Google Play's fee. Typical use will be far lower.
+
+---
+
+## 9. Numbers to watch after launch
 
 - Expressive minutes used per paying user, by country (the main cost driver)
 - Translation characters per user, by country
@@ -254,3 +332,4 @@ In order of value for effort.
 - How many free users watch rewarded ads, and whether they stay longer or upgrade
 - Share of yearly vs monthly subscribers, and their usage
 - Revenue per paying user, by country
+- Expressive minutes used by Pro users with their own voice, against those without (section 7)

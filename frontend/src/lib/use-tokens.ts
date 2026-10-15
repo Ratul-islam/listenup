@@ -20,6 +20,8 @@ export function useTokens() {
     cloudMid: read(useCSSVariable('--color-cloud-mid'), '#faf9ff'),
     cloudBottom: read(useCSSVariable('--color-cloud-bottom'), '#f3f1ff'),
     glowPink: read(useCSSVariable('--color-glow-pink'), '#fbeaf6'),
+    heroFrom: read(useCSSVariable('--color-hero-from'), '#7c69ee'),
+    heroTo: read(useCSSVariable('--color-hero-to'), '#5741d8'),
     danger: read(useCSSVariable('--color-danger'), '#d63c5e'),
     success: read(useCSSVariable('--color-success'), '#16a06a'),
   };

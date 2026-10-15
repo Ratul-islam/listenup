@@ -50,6 +50,8 @@ export class UsageService {
     const expressiveUsed = trial ? (user?.expressiveTrialUsedSec ?? 0) : (month?.expressiveSec ?? 0)
     const expressiveLimit = allowance.expressiveMinutes * 60
     const translatedUsed = month?.translatedChars ?? 0
+    const ocrUsed = month?.ocrPages ?? 0
+    const digestsUsed = month?.digests ?? 0
 
     return {
       period,
@@ -73,9 +75,12 @@ export class UsageService {
       },
       translation: {
         usedChars: translatedUsed,
-        limitChars: plan.monthlyTranslateChars,
-        remainingChars: Math.max(plan.monthlyTranslateChars - translatedUsed, 0),
+        limitChars: allowance.translateChars,
+        remainingChars: Math.max(allowance.translateChars - translatedUsed, 0),
       },
+      /** Pages read with OCR this month; no limit (null) on paid plans */
+      ocr: { usedPages: ocrUsed, limitPages: plan.monthlyOcrPages, remainingPages: plan.monthlyOcrPages === null ? null : Math.max(plan.monthlyOcrPages - ocrUsed, 0) },
+      digests: { used: digestsUsed, limit: plan.monthlyDigests, remaining: plan.monthlyDigests === null ? null : Math.max(plan.monthlyDigests - digestsUsed, 0) },
     }
   }
 
@@ -90,7 +95,7 @@ export class UsageService {
   async assertAvailable(userId: string, voice: VoiceDefinition & { tier: ServerTier }, estimatedSec: number, characters: number) {
     const s = await this.summary(userId)
     if (s[voice.tier].remainingSec <= 0) throw limitReached(voice.tier === 'expressive' && s.expressive.trial ? 'trial' : voice.tier)
-    await this.budget.assertCanSpend(this.bucket(s.plan.id), speechCostUsd(voice.model, characters, estimatedSec))
+    await this.budget.assertCanSpend(this.bucket(s.plan.id), speechCostUsd(voice.model, characters, estimatedSec), 'speech', userId)
   }
 
   /** Before voicing many clips at once (MP3 export): the allowance must cover all of them */
@@ -121,12 +126,40 @@ export class UsageService {
     }
   }
 
+  /** Before reading a scan, photo or legacy-font PDF with OCR: Free reads a few hundred pages a month */
+  async assertOcrPages(userId: string, pages: number) {
+    const { ocr } = await this.summary(userId)
+    if (ocr.remainingPages === null || pages <= ocr.remainingPages) return
+    throw new AppError(
+      ocr.remainingPages > 0
+        ? `The Free plan reads up to ${ocr.limitPages} scanned pages a month, and this has ${pages}. You have ${ocr.remainingPages} left this month; Plus has no limit.`
+        : `You've used this month's ${ocr.limitPages} scanned pages on the Free plan. They reset on the 1st; Plus has no limit.`,
+      402,
+      'OCR_LIMIT_REACHED',
+    )
+  }
+
+  async recordOcrPages(userId: string, pages: number) {
+    await this.usageRepository.add(userId, currentPeriod(), { characters: 0, naturalSec: 0, expressiveSec: 0, ocrPages: pages })
+  }
+
+  /** Before writing a daily digest: Free gets a few a month */
+  async assertCanDigest(userId: string) {
+    const { digests } = await this.summary(userId)
+    if (digests.remaining === null || digests.remaining > 0) return
+    throw new AppError(`That's this month's ${digests.limit} digests on the Free plan. They reset on the 1st; Plus has one every day.`, 402, 'DIGEST_LIMIT_REACHED')
+  }
+
+  async recordDigest(userId: string) {
+    await this.usageRepository.add(userId, currentPeriod(), { characters: 0, naturalSec: 0, expressiveSec: 0, digests: 1 })
+  }
+
   async recordTranslation(userId: string, characters: number) {
     await this.usageRepository.add(userId, currentPeriod(), { characters: 0, naturalSec: 0, expressiveSec: 0, translatedChars: characters })
   }
 
   /** After a clip is made: counts its real length and its estimated cost */
-  async record(userId: string, voice: VoiceDefinition & { tier: ServerTier }, seconds: number, characters: number, route?: SpeechRoute) {
+  async record(userId: string, voice: VoiceDefinition & { tier: ServerTier }, seconds: number, characters: number, route?: SpeechRoute, madeSeconds = seconds) {
     const s = await this.summary(userId)
     const sec = Math.round(seconds)
     const expressive = voice.tier === 'expressive'
@@ -143,6 +176,7 @@ export class UsageService {
       const overflow = Math.max(usedSec + sec - limitSec, 0) - Math.max(usedSec - limitSec, 0)
       if (overflow > 0 && bonusSec > 0) await this.usageRepository.spendBonus(userId, overflow)
     }
-    await this.budget.record(this.bucket(s.plan.id), voice.model, seconds, characters, speechCostUsd(voice.model, characters, seconds, { route }))
+    // What it cost follows all the speech that was made: a line that's checked can take two or three takes
+    await this.budget.record(this.bucket(s.plan.id), voice.model, seconds, characters, speechCostUsd(voice.model, characters, Math.max(madeSeconds, seconds), { route }), userId)
   }
 }

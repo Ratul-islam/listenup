@@ -1,18 +1,19 @@
 import { router } from 'expo-router';
 import { Spinner, useToast } from 'heroui-native';
-import { Bookmark, BookmarkCheck, ChevronDown, Download, Eraser, MoreHorizontal, PenLine, ScrollText, Sparkles, Trash2 } from 'lucide-react-native';
-import { useRef, useState } from 'react';
-import { View } from 'react-native';
+import { Bookmark, BookmarkCheck, ChevronDown, Download, Eraser, MoreHorizontal, Paintbrush, PenLine, Sparkles, Trash2, UsersRound } from 'lucide-react-native';
+import { useEffect, useRef, useState } from 'react';
+import { BackHandler, Pressable, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ActionSheet, SheetAction } from '@/components/ui/action-sheet';
-import { CloudBackground } from '@/components/ui/cloud-background';
 import { IconButton } from '@/components/ui/icon-button';
 import { InlineAlert } from '@/components/ui/inline-alert';
 import { PrimaryButton } from '@/components/ui/primary-button';
 import { Text } from '@/components/ui/text';
-import { narrationStyleMeta } from '@/features/expression/catalog';
+import { CommunityHeart } from '@/features/community/components/community-heart';
+import { CastSheet } from '@/features/expression/components/cast-sheet';
 import { DescribeSheet, type DescribeTarget } from '@/features/expression/components/describe-sheet';
 import { ExpressionSheet, type ExpressionTarget } from '@/features/expression/components/expression-sheet';
 import { ExpressiveSheet } from '@/features/expression/components/expressive-sheet';
@@ -24,16 +25,23 @@ import { useTokens } from '@/lib/use-tokens';
 import { phoneVoice } from '@/modules/phone-voice';
 
 import { playbackApi, type Bookmark as BookmarkItem } from '../api/playback.api';
-import { PlayerControls } from '../components/player-controls';
-import { Scrubber } from '../components/scrubber';
-import { SyncedText } from '../components/synced-text';
-import { Transcript, TranscriptToggle } from '../components/transcript';
-import { VoiceCard } from '../components/voice-card';
-import { VoiceWave } from '../components/voice-wave';
+import { LineMoreSheet } from '../components/line-more-sheet';
+import type { LineAction } from '../components/line-tools';
+import { PlayerDock } from '../components/player-dock';
+import { Transcript } from '../components/transcript';
 import { audioEngine } from '../engine/audio-engine';
-import { formatClock, usePlayerTimeline } from '../hooks/use-player';
-import { timeline, usePlayerStore } from '../store/player.store';
+import { formatClock } from '../hooks/use-player';
+import { TEXT_SIZE_LABELS, useTextSize } from '../lib/text-size';
+import { toolTarget } from '../lib/tool-target';
+import { usePlayerUi, type LineRef, type WordSelection } from '../store/player-ui.store';
+import { globalPosition, timeline, usePlayerStore } from '../store/player.store';
 
+/**
+ * The player: an open page of text that follows the voice, over one panel
+ * with the playback controls and four named tools (the voice, a feeling,
+ * saying a line yourself, and making the whole story expressive). Tapping a
+ * line opens that line's own tools under it. Everything rarer is under ⋯.
+ */
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const t = useTokens();
@@ -42,19 +50,41 @@ export default function PlayerScreen() {
   const document = usePlayerStore((s) => s.document);
   const error = usePlayerStore((s) => s.error);
   const errorCode = usePlayerStore((s) => s.errorCode);
-  const isPlaying = usePlayerStore((s) => s.isPlaying);
-  const { positionMs } = usePlayerTimeline();
-  const [view, setView] = useState<'live' | 'transcript'>('live');
+  const documentId = usePlayerStore((s) => s.documentId);
+  const titleOnPage = usePlayerUi((s) => s.titleOnPage);
+  const size = useTextSize((s) => s.size);
+  const cycleSize = useTextSize((s) => s.cycle);
   const [menu, setMenu] = useState(false);
   const [bookmarks, setBookmarks] = useState<BookmarkItem[] | null>(null);
   const [saved, setSaved] = useState(false);
   const [editing, setEditing] = useState<ExpressionTarget | null>(null);
   const [describing, setDescribing] = useState<DescribeTarget | null>(null);
+  const [lineMenu, setLineMenu] = useState<LineRef | null>(null);
   const [directing, setDirecting] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [casting, setCasting] = useState(false);
+  const cast = usePlayerStore((s) => s.cast);
   const resumeAfterEdit = useRef(false);
   const auto = useAutoExpression();
+
+  // A document opens with nothing picked, following the voice; leaving puts it all away
+  useEffect(() => {
+    usePlayerUi.getState().reset();
+    return () => usePlayerUi.getState().reset();
+  }, [documentId]);
+
+  // Back first puts away what's open on the page (a line's tools, chosen words, the brushes)
+  useEffect(() => {
+    const back = BackHandler.addEventListener('hardwareBackPress', () => {
+      const { line, words, painting, reset } = usePlayerUi.getState();
+      if (!line && !words && !painting) return false;
+      if (painting) audioEngine.commitEdits();
+      reset();
+      return true;
+    });
+    return () => back.remove();
+  }, []);
 
   // Hold the line still while choosing; applying replays it in its new voice
   const editLine = (target: ExpressionTarget) => {
@@ -62,9 +92,14 @@ export default function PlayerScreen() {
     audioEngine.pause();
     setEditing(target);
   };
+  /** A sheet closed: a change replays from that line, so the page goes back to following; otherwise carry on as before */
+  const afterSheet = (applied: boolean) => {
+    if (applied) usePlayerUi.getState().reset();
+    else if (resumeAfterEdit.current) audioEngine.play();
+  };
   const closeEditor = (applied: boolean) => {
     setEditing(null);
-    if (!applied && resumeAfterEdit.current) audioEngine.play();
+    afterSheet(applied);
   };
   const describe = (target: DescribeTarget) => {
     if (!editing) {
@@ -76,10 +111,35 @@ export default function PlayerScreen() {
   };
   const closeDescribe = (applied: boolean) => {
     setDescribing(null);
-    if (!applied && resumeAfterEdit.current) audioEngine.play();
+    afterSheet(applied);
   };
-  const style = document?.narration?.style;
-  const styleLabel = style === 'auto' ? (document?.narration?.detected ? narrationStyleMeta[document.narration.detected] : null) : style ? narrationStyleMeta[style] : null;
+
+  /** A tool under a tapped line */
+  const onLineAction = (action: Exclude<LineAction, 'play'>, line: LineRef) => {
+    const sentence = usePlayerStore.getState().chunks[line.chunkIndex]?.sentences[line.sentenceIndex];
+    if (!sentence) return;
+    if (action === 'feeling') editLine(line);
+    else if (action === 'say') describe({ chunkIndex: line.chunkIndex, start: sentence.start, end: sentence.end, way: 'say' });
+    else setLineMenu(line);
+  };
+  /** "Feeling" and "Say it" under the page: for the tapped line, or the one being heard */
+  const feelingForLine = () => {
+    const target = toolTarget();
+    if (target) editLine({ chunkIndex: target.chunkIndex, sentenceIndex: target.sentenceIndex });
+  };
+  const sayLine = () => {
+    const target = toolTarget();
+    if (target) describe({ chunkIndex: target.chunkIndex, start: target.start, end: target.end, way: 'say' });
+  };
+  /** The words chosen with the handles go to a sheet, which takes over from the handles */
+  const describeWords = (words: WordSelection) => {
+    describe({ chunkIndex: words.chunkIndex, start: words.start, end: words.end });
+    usePlayerUi.getState().selectWords(null);
+  };
+  const moreForWords = (words: WordSelection) => {
+    editLine({ chunkIndex: words.chunkIndex, sentenceIndex: words.sentenceIndex, range: { start: words.start, end: words.end } });
+    usePlayerUi.getState().selectWords(null);
+  };
 
   // Swipe down on the header to return to the shelf
   const swipeDown = Gesture.Pan()
@@ -90,13 +150,14 @@ export default function PlayerScreen() {
     });
 
   const addBookmark = async () => {
-    const { documentId, chunkIndex, positionMs: offsetMs } = usePlayerStore.getState();
+    const state = usePlayerStore.getState();
+    const { documentId, chunkIndex, positionMs: offsetMs } = state;
     if (!documentId) return;
     try {
       await playbackApi.addBookmark(documentId, { chunkIndex, offsetMs });
       haptics.success();
       setSaved(true);
-      toast.show({ label: 'Bookmarked', description: `At ${formatClock(positionMs)}` });
+      toast.show({ label: 'Bookmarked', description: `At ${formatClock(globalPosition(state).positionMs)}` });
     } catch (e) {
       toast.show({ variant: 'danger', label: getErrorMessage(e) });
     }
@@ -110,94 +171,99 @@ export default function PlayerScreen() {
 
   if (status === 'loading' || status === 'idle') {
     return (
-      <CloudBackground>
-        <View className="flex-1 items-center justify-center gap-4">
-          <Spinner size="lg" color={t.accent} />
-          <Text variant="caption">Opening…</Text>
-        </View>
-      </CloudBackground>
+      <View className="flex-1 items-center justify-center gap-4 bg-background">
+        <Spinner size="lg" color={t.accent} />
+        <Text variant="caption">Opening…</Text>
+      </View>
     );
   }
 
   if (status === 'error' || !document) {
     return (
-      <CloudBackground>
-        <View className="flex-1 justify-center gap-4 px-6">
-          <InlineAlert message={error ?? 'Something went wrong.'} />
-          <PrimaryButton label="Back to Soundshelf" variant="secondary" onPress={router.back} />
-        </View>
-      </CloudBackground>
+      <View className="flex-1 justify-center gap-4 bg-background px-6">
+        <InlineAlert message={error ?? 'Something went wrong.'} />
+        <PrimaryButton label="Back to Soundshelf" variant="secondary" onPress={router.back} />
+      </View>
     );
   }
 
   return (
-    <CloudBackground>
-      <View className="flex-1 gap-5 px-5" style={{ paddingTop: insets.top + 6, paddingBottom: insets.bottom + 16 }}>
-        <GestureDetector gesture={swipeDown}>
-          <View className="gap-3">
-            <View className="flex-row items-center">
-              <IconButton accessibilityLabel="Close player" onPress={router.back}>
-                <ChevronDown size={24} color={t.foreground} />
-              </IconButton>
-              <View className="flex-1" />
-              <IconButton accessibilityLabel="Bookmark this moment" onPress={() => void addBookmark()}>
-                {saved ? <BookmarkCheck size={21} color={t.accent} /> : <Bookmark size={21} color={t.foreground} />}
-              </IconButton>
-              <IconButton accessibilityLabel="More" onPress={() => setMenu(true)}>
-                <MoreHorizontal size={21} color={t.foreground} />
-              </IconButton>
-            </View>
-
-            <View className="items-center gap-1 px-4">
-              <Text variant="h2" className="text-center" numberOfLines={2}>{document.title}</Text>
-              {document.author ? <Text variant="caption" className="text-center text-[14px]" numberOfLines={1}>{document.author}</Text> : null}
-            </View>
+    // A flat page, so the text can slip under its edges cleanly
+    <View className="flex-1 bg-background">
+      {/* Close on the left, the page's few settings on the right */}
+      <GestureDetector gesture={swipeDown}>
+        <View className="flex-row items-center px-2 pb-1" style={{ paddingTop: insets.top + 4 }}>
+          <IconButton accessibilityLabel="Close player" onPress={router.back}>
+            <ChevronDown size={24} color={t.foreground} />
+          </IconButton>
+          <View className="flex-1 px-1">
+            {/* At the start of the document its title is on the page itself, large; the bar takes over once that's scrolled away */}
+            {titleOnPage ? null : (
+              <Animated.View entering={FadeIn.duration(220)} exiting={FadeOut.duration(140)}>
+                <Text className="text-[15px] font-bold leading-5 tracking-[-0.2px]" numberOfLines={1}>{document.title}</Text>
+                {document.author ? <Text variant="caption" numberOfLines={1}>{document.author}</Text> : null}
+              </Animated.View>
+            )}
+            {/* A writing from Explore: heart it from here once you've heard enough */}
+            {document.publicationId ? (
+              <View className="flex-row">
+                <CommunityHeart publicationId={document.publicationId} />
+              </View>
+            ) : null}
           </View>
-        </GestureDetector>
-
-        {view === 'live' ? (
-          <>
-            <VoiceWave active={isPlaying} />
-            <SyncedText onOpenTranscript={() => setView('transcript')} onEditLine={editLine} />
-          </>
-        ) : (
-          <>
-            <Transcript onEditLine={editLine} onDescribe={describe} />
-            <TranscriptToggle onPress={() => setView('live')} />
-          </>
-        )}
-
-        <InlineAlert
-          message={error}
-          action={
-            errorCode === 'VOICE_MISSING' ? (
-              <PrimaryButton
-                label="Download the voice"
-                size="md"
-                variant="secondary"
-                onPress={() => {
-                  if (!phoneVoice.openInstallVoiceData()) toast.show({ variant: 'danger', label: "This phone can't download voices." });
-                }}
-              />
-            ) : undefined
-          }
-        />
-        <View className="gap-3">
-          <Scrubber />
-          <PlayerControls />
-          <VoiceCard />
+          <Pressable
+            onPress={() => {
+              haptics.tap();
+              cycleSize();
+            }}
+            hitSlop={4}
+            accessibilityRole="button"
+            accessibilityLabel={`Text size: ${TEXT_SIZE_LABELS[size]}. Tap to change`}
+            className="size-11 items-center justify-center rounded-full active:bg-default"
+          >
+            <Text className="text-[16px] font-bold">
+              A<Text className="text-[12px] font-bold">a</Text>
+            </Text>
+          </Pressable>
+          <IconButton accessibilityLabel="Bookmark this moment" onPress={() => void addBookmark()}>
+            {saved ? <BookmarkCheck size={21} color={t.accent} /> : <Bookmark size={21} color={t.foreground} />}
+          </IconButton>
+          <IconButton accessibilityLabel="More" onPress={() => setMenu(true)}>
+            <MoreHorizontal size={21} color={t.foreground} />
+          </IconButton>
         </View>
-      </View>
+      </GestureDetector>
+
+      <Transcript onLineAction={onLineAction} />
+
+      <PlayerDock
+        onFeeling={feelingForLine}
+        onSayIt={sayLine}
+        onExpressive={() => setDirecting(true)}
+        directing={auto.running}
+        onCast={() => setCasting(true)}
+        onDescribeWords={describeWords}
+        onMoreWords={moreForWords}
+        alert={
+          <InlineAlert
+            message={error}
+            action={
+              errorCode === 'VOICE_MISSING' ? (
+                <PrimaryButton
+                  label="Download the voice"
+                  size="md"
+                  variant="secondary"
+                  onPress={() => {
+                    if (!phoneVoice.openInstallVoiceData()) toast.show({ variant: 'danger', label: "This phone can't download voices." });
+                  }}
+                />
+              ) : undefined
+            }
+          />
+        }
+      />
 
       <ActionSheet visible={menu} onClose={() => setMenu(false)} title={document.title}>
-        <SheetAction
-          icon={<ScrollText size={18} color={t.foreground} />}
-          label={view === 'live' ? 'Show transcript' : 'Show live text'}
-          onPress={() => {
-            setView(view === 'live' ? 'transcript' : 'live');
-            setMenu(false);
-          }}
-        />
         <SheetAction icon={<Bookmark size={18} color={t.foreground} />} label="Bookmarks" onPress={() => void openBookmarks()} />
         <SheetAction
           icon={<PenLine size={18} color={t.foreground} />}
@@ -217,15 +283,26 @@ export default function PlayerScreen() {
           }}
         />
         <SheetAction
-          icon={auto.running ? <Spinner size="sm" color={t.accent} /> : <Sparkles size={18} color={t.accent} />}
-          label={auto.running ? 'Directing your story…' : 'Make it expressive'}
-          detail={styleLabel ? `${styleLabel.emoji} ${styleLabel.label} · Change the style or direct again` : 'Pick a style, or let AI find the mood and characters'}
-          disabled={auto.busy}
+          icon={<Paintbrush size={18} color={t.foreground} />}
+          label="Paint feelings"
+          detail="Give many lines the same feeling, a tap each"
           onPress={() => {
             setMenu(false);
-            setDirecting(true);
+            haptics.tap();
+            usePlayerUi.getState().setPainting(true);
           }}
         />
+        {cast.length ? (
+          <SheetAction
+            icon={<UsersRound size={18} color={t.foreground} />}
+            label="Character voices"
+            detail={`${cast.slice(0, 2).map((c) => c.name).join(', ')}${cast.length > 2 ? ` and ${cast.length - 2} more` : ''}`}
+            onPress={() => {
+              setMenu(false);
+              setCasting(true);
+            }}
+          />
+        ) : null}
         {auto.hasAny ? (
           <SheetAction
             icon={<Eraser size={18} color={t.danger} />}
@@ -242,11 +319,13 @@ export default function PlayerScreen() {
 
       <ExpressionSheet target={editing} onClose={closeEditor} onDescribe={describe} />
       <DescribeSheet target={describing} onClose={closeDescribe} />
+      <LineMoreSheet line={lineMenu} onClose={() => setLineMenu(null)} onDescribe={describe} />
       <ExpressiveSheet visible={directing} onClose={() => setDirecting(false)} />
+      <CastSheet visible={casting} onClose={() => setCasting(false)} />
       <ExportSheet document={exporting ? document : null} onClose={() => setExporting(false)} />
 
       <ActionSheet visible={removing} onClose={() => setRemoving(false)} title="Remove emotions?">
-        <Text variant="caption" className="mb-1">Lines go back to normal narration. Parts already playing keep their sound.</Text>
+        <Text variant="caption" className="mb-1">Lines go back to normal narration.{cast.length ? ' Characters keep their voices; those are under Character voices.' : ''}</Text>
         {auto.hasAi ? (
           <SheetAction
             icon={<Sparkles size={18} color={t.foreground} />}
@@ -303,6 +382,6 @@ export default function PlayerScreen() {
           );
         })}
       </ActionSheet>
-    </CloudBackground>
+    </View>
   );
 }

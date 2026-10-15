@@ -12,7 +12,11 @@ export class MockTtsProvider implements TtsProvider {
   readonly billable = false
 
   async synthesize(req: SynthesisRequest): Promise<SynthesisResult> {
-    return { audio: encodeWav(this.render(req)), mimeType: 'audio/wav', extension: 'wav', provider: this.name, model: 'mock-tone' }
+    // Runs said differently are rendered one after another, with their pauses between
+    const samples = req.segments?.length
+      ? req.segments.flatMap((s) => [...new Array<number>(Math.round((s.gapMs / 1000) * RATE)).fill(0), ...this.render({ ...req, voice: s.voice ?? req.voice, text: s.text, style: s.style })])
+      : this.render(req)
+    return { audio: encodeWav(samples), mimeType: 'audio/wav', extension: 'wav', provider: this.name, model: 'mock-tone' }
   }
 
   private render({ text, voice, style }: SynthesisRequest) {

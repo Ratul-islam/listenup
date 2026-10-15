@@ -8,10 +8,13 @@ import {
   RESET_TOKEN_TTL,
 } from "../config/constants.js";
 import { AppError } from "../utils/AppError.js";
+import { sessionIsLive } from "../modules/auth/session-check.js";
 
 export interface AccessTokenPayload {
   sub: string;
   email: string;
+  // Login session (refresh token family) the token was issued in
+  sid: string;
 }
 
 export interface RefreshTokenPayload {
@@ -72,6 +75,13 @@ export default fp(async (app) => {
         throw new AppError("Access token expired", 401, "TOKEN_EXPIRED");
       }
       throw new AppError("Unauthorized", 401, "UNAUTHORIZED");
+    }
+    // A signed token from a session that has ended (logout, password reset, closed
+    // account) stops working now rather than when it expires. Tokens from before
+    // sessions were named get the same answer, and the app refreshes into a named one
+    const { sub, sid } = request.user;
+    if (!sid || !(await sessionIsLive(sid, sub))) {
+      throw new AppError("Session ended", 401, "TOKEN_EXPIRED");
     }
   });
 });

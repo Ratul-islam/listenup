@@ -29,6 +29,14 @@
     "plugins": [
       "expo-router",
       [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "organization": "4512261058592768",
+          "project": "4512261060493312"
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#F4F2FF",
@@ -110,8 +118,7 @@
         "expo-image-picker",
         {
           "photosPermission": "ListenUp reads text from photos you choose.",
-          "cameraPermission": "ListenUp reads text from pages you photograph.",
-          "microphonePermission": false
+          "cameraPermission": "ListenUp reads text from pages you photograph."
         }
       ],
       "expo-document-picker",
@@ -133,6 +140,28 @@
               "image/*"
             ]
           }
+        }
+      ],
+      [
+        "react-native-android-widget",
+        {
+          "fonts": [
+            "./assets/fonts/PlusJakartaSans_500Medium.ttf",
+            "./assets/fonts/PlusJakartaSans_700Bold.ttf",
+            "./assets/fonts/PlusJakartaSans_800ExtraBold.ttf"
+          ],
+          "widgets": [
+            {
+              "name": "Continue",
+              "label": "Continue listening",
+              "description": "Pick up where you left off, or play today's digest",
+              "minWidth": "110dp",
+              "minHeight": "40dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 2,
+              "resizeMode": "horizontal|vertical"
+            }
+          ]
         }
       ],
       [

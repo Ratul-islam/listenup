@@ -2,9 +2,10 @@ import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 import { router } from 'expo-router';
 import { Switch, useToast } from 'heroui-native';
-import { ChevronRight, FileText, Gift, Languages, Leaf, Podcast, Shield, ShieldCheck, Star } from 'lucide-react-native';
+import { ChevronRight, FileAudio, FileText, Gift, Languages, Leaf, Mic, Podcast, Shield, ShieldCheck, Star } from 'lucide-react-native';
 import { Alert, Pressable, View } from 'react-native';
 
+import { GlassCard } from '@/components/ui/glass-card';
 import { ProgressBar } from '@/components/ui/progress-bar';
 import { ChoiceChips, SettingsRow, SettingsSection } from '@/components/ui/settings';
 import { Text } from '@/components/ui/text';
@@ -14,6 +15,7 @@ import { showAdPrivacyOptions, useAdsSdk } from '@/features/ads/lib/ads-sdk';
 import { useListeningStats } from '@/features/library/hooks/use-documents';
 import { offlineFiles, useOfflineStore } from '@/features/offline/offline-files';
 import { megabytes } from '@/features/offline/offline-panel';
+import { offersOwnVoice, useOwnVoice } from '@/features/own-voice/hooks';
 import { isOnDeviceActive, onDeviceVoice, useOnDeviceStore } from '@/features/on-device/on-device-voice';
 import { VoiceAvatar } from '@/features/voices/components/voice-avatar';
 import { useUpdatePreferences, useUsage, useVoices } from '@/features/voices/hooks/use-voices';
@@ -53,6 +55,7 @@ export function SettingsSections() {
   const [theme, setTheme] = useThemePreference();
   const adPrivacy = useAdsSdk((s) => s.privacyOptionsRequired);
   const onDevice = useOnDeviceStore();
+  const ownVoice = useOwnVoice().data;
   const onDeviceActive = isOnDeviceActive(onDevice);
   const prefs = data?.preferences;
 
@@ -174,6 +177,12 @@ export function SettingsSections() {
           detail="Plus · Your documents in any podcast app"
           onPress={() => router.push('/podcast')}
         />
+        <SettingsRow
+          icon={<FileAudio size={19} color={t.foreground} />}
+          label="Your exports"
+          detail="Every MP3 you’ve made, to play or save again"
+          onPress={() => router.push('/exports')}
+        />
       </SettingsSection>
 
       <View className="gap-2.5">
@@ -186,6 +195,22 @@ export function SettingsSections() {
             {tiles.slice(row * 2, row * 2 + 2)}
           </View>
         ))}
+        {offersOwnVoice(ownVoice) ? (
+          <GlassCard className="p-1.5">
+            <SettingsRow
+              icon={<Mic size={19} color={t.foreground} />}
+              label="Your voice"
+              detail={
+                ownVoice.status === 'ready'
+                  ? 'Recorded. Choose it in any language'
+                  : ownVoice.status === 'locked'
+                    ? `Saved. It reads again on ${ownVoice.plan}`
+                    : `${ownVoice.plan} · Hear your documents in your own voice`
+              }
+              onPress={() => router.push('/own-voice')}
+            />
+          </GlassCard>
+        ) : null}
       </View>
 
       {downloads.length ? (

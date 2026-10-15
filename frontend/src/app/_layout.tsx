@@ -7,13 +7,19 @@ import { useThemeColor } from 'heroui-native';
 import { useEffect } from 'react';
 
 import { useAuthStore } from '@/features/auth/store/auth.store';
+import { withCrashReports } from '@/lib/crash-reports';
 import { applyStoredTheme } from '@/lib/theme';
 import { AppProviders } from '@/providers/app-providers';
 
 SplashScreen.preventAutoHideAsync();
 applyStoredTheme();
 
-export default function RootLayout() {
+// A screen that fails to draw shows this instead of closing the app
+export { CrashScreen as ErrorBoundary } from '@/components/ui/crash-screen';
+
+export default withCrashReports(RootLayout);
+
+function RootLayout() {
   return (
     <AppProviders>
       <StatusBar style="auto" />

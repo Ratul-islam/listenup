@@ -1,8 +1,10 @@
+import { Spinner } from 'heroui-native';
 import { Download, Pause, Play } from 'lucide-react-native';
 import { Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Text } from '@/components/ui/text';
+import { useExportStore } from '@/features/exports/lib/export-runner';
 import { audioEngine } from '@/features/player/engine/audio-engine';
 import { globalPosition, timeline, usePlayerStore } from '@/features/player/store/player.store';
 import type { ReaderChunk } from '@/features/library/types';
@@ -34,6 +36,9 @@ export function TransportBar({ documentId, chunks, voiceId, onExport }: Transpor
   const position = usePlayerStore((s) => (s.documentId === documentId ? globalPosition(s).positionMs : 0));
   const part = usePlayerStore((s) => (s.documentId === documentId ? s.chunkIndex : 0));
   const total = timeline(chunks).total;
+  // An MP3 being made in the background shows how far it's got
+  const job = useExportStore((s) => s.jobs[documentId]);
+  const exportLabel = job?.phase === 'making' ? `${Math.floor((job.done / job.total) * 100)}%` : job?.phase === 'saving' ? 'Saving' : 'Export';
 
   const toggle = () => {
     haptics.tap();
@@ -64,10 +69,11 @@ export function TransportBar({ documentId, chunks, voiceId, onExport }: Transpor
         <Pressable
           onPress={onExport}
           accessibilityRole="button"
+          accessibilityLabel={exportLabel === 'Export' ? 'Export' : `Export, MP3 ${exportLabel === 'Saving' ? 'saving' : `${exportLabel} made`}`}
           className="h-11 flex-row items-center gap-2 rounded-full bg-accent-soft-bg px-4 active:opacity-80"
         >
-          <Download size={17} color={t.accent} />
-          <Text className="text-[15px] font-semibold text-accent-soft-fg">Export</Text>
+          {exportLabel === 'Export' ? <Download size={17} color={t.accent} /> : <Spinner size="sm" color={t.accent} />}
+          <Text className="text-[15px] font-semibold text-accent-soft-fg" style={tabular}>{exportLabel}</Text>
         </Pressable>
       </View>
     </View>

@@ -5,11 +5,12 @@ import { AppError } from '../../utils/AppError.js'
 import type { Lang } from '../ingestion/text/language.js'
 import type { Lexicon } from '../pronunciations/lexicon.js'
 import type { TtsService } from '../tts/tts.service.js'
+import { ownVoiceIsPrivate } from '../voices/own-voice.js'
 import { isServerVoice } from '../voices/voice-catalog.js'
 import { NO_EXPRESSIONS, readExpressions, sliceExpressions } from '../expressions/expression-catalog.js'
 import { planAtLeast } from '../plans/plan-catalog.js'
 import { lexiconFor } from '../pronunciations/lexicon-cache.js'
-import type { VoicesService } from '../voices/voices.service.js'
+import { mainLanguage, type VoicesService } from '../voices/voices.service.js'
 import type { PlaybackRepository } from './playback.repository.js'
 import type { BookmarkBody, ProgressBody, VoiceNoteBody } from './playback.schema.js'
 
@@ -69,21 +70,30 @@ export class PlaybackService {
     const chunk = await this.playbackRepository.findChunk(documentId, index)
     if (!chunk) throw new AppError('That part of the document does not exist', 404, 'CHUNK_NOT_FOUND')
 
-    const [prefs, lexicon] = await Promise.all([this.voicesService.getPreferences(userId), lexiconFor(userId)])
+    const [prefs, lexicon] = await Promise.all([this.voicesService.getPreferences(userId, documentId), lexiconFor(userId)])
     const chosen = voiceId ?? doc.playback[0]?.voiceId
-    const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(chosen, chunk.language as Lang, prefs))
+    // In a document that's mostly one language, its voice reads the rest too when it can
+    const main = mainLanguage(doc.language)
+    const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(chosen, chunk.language as Lang, prefs, main), prefs)
     if (!isServerVoice(voice)) throw new AppError('Phone voices play on the device, not from the server.', 400, 'PHONE_VOICE')
     const clip = await this.ttsService.ensureClip(userId, chunk, voice, lexicon)
 
-    this.prefetch(userId, documentId, index + 1, chosen, prefs, lexicon)
+    this.prefetch(userId, documentId, index + 1, chosen, prefs, lexicon, main)
 
+    const [url, anchors] = await Promise.all([
+      storage.signedUrl(clip.storageKey, SIGNED_URL_TTL_SECONDS),
+      // The highlight works without them, so a failure here never stops playback
+      this.ttsService.anchorsFor(clip, chunk).catch(() => null),
+    ])
     return {
       index,
       voiceId: voice.id,
       language: chunk.language,
       durationMs: clip.durationMs,
       mimeType: clip.mimeType,
-      url: await storage.signedUrl(clip.storageKey, SIGNED_URL_TTL_SECONDS),
+      url,
+      /** Where the text is spoken: [character, ms] points the highlight moves between; null when not known */
+      anchors,
     }
   }
 
@@ -94,24 +104,29 @@ export class PlaybackService {
     chosen: string | null | undefined,
     prefs: Awaited<ReturnType<VoicesService['getPreferences']>>,
     lexicon: Lexicon,
+    main: Lang | null,
   ) {
     void (async () => {
       const chunks: DocumentChunk[] = await this.playbackRepository.findChunks(documentId, from, PREFETCH_CHUNKS)
-      for (const chunk of chunks) {
-        const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(chosen, chunk.language as Lang, prefs))
-        if (isServerVoice(voice)) await this.ttsService.ensureClip(userId, chunk, voice, lexicon)
-      }
+      // Side by side, so a short part (the first one is) doesn't finish before the one after it is voiced
+      await Promise.all(
+        chunks.map((chunk) => {
+          const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(chosen, chunk.language as Lang, prefs, main), prefs)
+          return isServerVoice(voice) ? this.ttsService.ensureClip(userId, chunk, voice, lexicon) : null
+        }),
+      )
     })().catch((e) => {
       if ((e as { code?: string }).code !== 'USAGE_LIMIT_REACHED') console.warn('[playback] prefetch failed', e)
     })
   }
 
   /**
-   * A sentence or paragraph as an MP3 to share (e.g. a WhatsApp voice note),
-   * with the listener's emotions. Free plans end with "Made with ListenUp".
-   * Phone voices make voice notes on the device instead.
+   * Part of one chunk voiced on its own, with the listener's emotions, in the
+   * document's voice: a voice note, or a clip posted to Explore. Phone voices
+   * can't be voiced here, and a clip for Explore (`builtInOnly`) can't be in
+   * the listener's own voice, which stays private.
    */
-  async voiceNote(userId: string, documentId: string, { chunkIndex, start, end, voiceId }: VoiceNoteBody) {
+  async voiceClip(userId: string, documentId: string, { chunkIndex, start, end, voiceId }: VoiceNoteBody, maxChars = Infinity, builtInOnly = false) {
     const doc = await this.readyDocument(userId, documentId)
     const chunk = await this.playbackRepository.findChunk(documentId, chunkIndex)
     if (!chunk) throw new AppError('That part of the document does not exist', 404, 'CHUNK_NOT_FOUND')
@@ -119,14 +134,28 @@ export class PlaybackService {
     const to = Math.min(end, chunk.text.length)
     const text = chunk.text.slice(from, to).trim()
     if (!text) throw new AppError('Pick some text to send', 400, 'EMPTY_SELECTION')
+    if (text.length > maxChars) throw new AppError(`That's too long for a clip. Pick a line or a short paragraph (up to ${maxChars} characters).`, 400, 'CLIP_TOO_LONG')
     const lead = chunk.text.slice(from, to).indexOf(text)
 
+    // Not scoped to the document: a voice note is a file that leaves the app, so a speaker's voice never makes one
     const prefs = await this.voicesService.getPreferences(userId)
-    const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(voiceId ?? doc.playback[0]?.voiceId, chunk.language as Lang, prefs))
+    const voice = this.voicesService.forPart(chunk, this.voicesService.resolve(voiceId ?? doc.playback[0]?.voiceId, chunk.language as Lang, prefs, mainLanguage(doc.language)), prefs)
     if (!isServerVoice(voice)) throw new AppError('Phone voices make voice notes on the device.', 400, 'PHONE_VOICE')
+    if (builtInOnly && voice.own) throw ownVoiceIsPrivate()
 
     const expressions = sliceExpressions(readExpressions(chunk.expressions), from + lead, from + lead + text.length)
-    let note = await this.ttsService.voiceText(userId, text, expressions, voice, chunk.narration, await lexiconFor(userId))
+    const audio = await this.ttsService.voiceText(userId, text, expressions, voice, chunk.narration, await lexiconFor(userId))
+    return { doc, text, voice, audio }
+  }
+
+  /**
+   * A sentence or paragraph as an MP3 to share (e.g. a WhatsApp voice note),
+   * with the listener's emotions. Free plans end with "Made with ListenUp".
+   * Phone voices make voice notes on the device instead.
+   */
+  async voiceNote(userId: string, documentId: string, body: VoiceNoteBody) {
+    const { text, voice, audio } = await this.voiceClip(userId, documentId, body)
+    let note = audio
     const free = !planAtLeast((await this.playbackRepository.findUserPlan(userId))?.plan, 'plus')
     if (free && note.mimeType === 'audio/mpeg') {
       const tag = await this.ttsService.voiceText(null, NOTE_TAG[voice.language], NO_EXPRESSIONS, voice)
@@ -141,9 +170,8 @@ export class PlaybackService {
   }
 
   async saveProgress(userId: string, documentId: string, body: ProgressBody) {
-    const doc = await this.readyDocument(userId, documentId)
+    const [doc, listened] = await Promise.all([this.readyDocument(userId, documentId), this.creditListening(userId, body.listenedSec)])
     const chunkIndex = Math.min(body.chunkIndex, Math.max(doc.chunkCount - 1, 0))
-    const listened = Math.min(body.listenedSec, MAX_LISTEN_REPORT_SECONDS)
 
     const [state] = await Promise.all([
       this.playbackRepository.upsertState(userId, documentId, {
@@ -151,12 +179,26 @@ export class PlaybackService {
         offsetMs: body.offsetMs,
         voiceId: body.voiceId,
         speed: body.speed,
+        listenedSec: Math.round(listened),
         ...(body.completed !== undefined && { completedAt: body.completed ? new Date() : null }),
       }),
       listened > 0 ? this.playbackRepository.addListening(userId, body.day, Math.round(listened)) : null,
     ])
     if (listened > 0) this.onListened(userId).catch((e) => console.warn('[playback] after-listening check failed', e))
     return state
+  }
+
+  /**
+   * How much of the reported listening counts. The app says how long it played,
+   * but a report can say anything, and invite rewards, contest hearts and streaks
+   * rest on it: listening is credited no faster than the clock runs (a second a
+   * second across all of a user's documents), with up to
+   * MAX_LISTEN_REPORT_SECONDS of catch-up for time played offline or between
+   * reports. Sending the same report again and again adds nothing.
+   */
+  private async creditListening(userId: string, reportedSec: number) {
+    if (reportedSec < 1) return 0
+    return this.playbackRepository.creditListening(userId, reportedSec, new Date(), MAX_LISTEN_REPORT_SECONDS)
   }
 
   /** Minutes today, the daily goal, and the current streak of listening days */

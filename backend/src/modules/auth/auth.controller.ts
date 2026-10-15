@@ -12,6 +12,7 @@ import type {
   RefreshTokenBody,
   RegisterBody,
   ResetPasswordBody,
+  VerifyEmailBody,
 } from './auth.schema.js'
 import { listOAuthProviders } from './oauth/oauth.registry.js'
 
@@ -25,13 +26,14 @@ export class AuthController {
 
   register = async (request: FastifyRequest<{ Body: RegisterBody }>, reply: FastifyReply) => {
     await this.authService.register(request.body)
+    // The same whether or not the address already has an account (that owner gets an email instead)
     return sendSuccess(reply, {
       statusCode: 201,
-      message: 'Account created. Enter the code sent to your email to verify it.',
+      message: 'Enter the code sent to your email.',
     })
   }
 
-  verifyEmail = async (request: FastifyRequest<{ Body: EmailOtpBody }>, reply: FastifyReply) => {
+  verifyEmail = async (request: FastifyRequest<{ Body: VerifyEmailBody }>, reply: FastifyReply) => {
     const session = await this.authService.verifyEmail(request.body, clientContext(request))
     return sendSuccess(reply, { message: 'Email verified', data: session })
   }

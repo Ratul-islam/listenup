@@ -1,5 +1,4 @@
-import { useToast } from 'heroui-native';
-import { ChevronDown, Info, MessageSquareQuote, Send, X } from 'lucide-react-native';
+import { ChevronDown, Mic, X } from 'lucide-react-native';
 import { useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 
@@ -9,17 +8,17 @@ import { PrimaryButton } from '@/components/ui/primary-button';
 import { Text } from '@/components/ui/text';
 import { audioEngine } from '@/features/player/engine/audio-engine';
 import { usePlayerStore } from '@/features/player/store/player.store';
-import { shareVoiceNote } from '@/features/voice-notes/voice-note';
-import { useVoice } from '@/features/voices/hooks/use-voices';
 import { getErrorMessage } from '@/lib/api/api-error';
 import { haptics } from '@/lib/haptics';
 import { useTokens } from '@/lib/use-tokens';
 
-import { expressionsApi } from '../api/expressions.api';
 import { EMOTIONS, SOUNDS, tint, type EmotionId, type SoundId } from '../catalog';
-import { applyEmotion } from '../lib/apply';
+import { applyEmotion, saveExpressions } from '../lib/apply';
 import { markOf, setSound, soundAt, type Range } from '../lib/marks';
+import { quoted } from '../lib/quote';
 import { Chip } from './controls';
+import type { DescribeTarget } from './describe-sheet';
+import { PlainVoiceNotice } from './plain-voice-notice';
 
 export interface ExpressionTarget {
   chunkIndex: number;
@@ -32,11 +31,11 @@ interface ExpressionSheetProps {
   target: ExpressionTarget | null;
   /** `applied` is true when the line is being re-voiced and played */
   onClose: (applied: boolean) => void;
-  /** "Say it in your own words" for the same words */
-  onDescribe: (target: { chunkIndex: number } & Range) => void;
+  /** "Say it yourself" or "Describe it" for the same words */
+  onDescribe: (target: DescribeTarget) => void;
 }
 
-/** "How should this sound?": every emotion, how strong, a sound before it, or your own words */
+/** "How should this sound?": every emotion, how strong, a sound before it, or your own way of saying it */
 export function ExpressionSheet({ target, onClose, onDescribe }: ExpressionSheetProps) {
   return (
     <ActionSheet visible={!!target} onClose={() => onClose(false)} title="How should this sound?">
@@ -49,12 +48,6 @@ function Editor({ target, onClose, onDescribe }: { target: ExpressionTarget; onC
   const t = useTokens();
   const documentId = usePlayerStore((s) => s.documentId);
   const chunk = usePlayerStore((s) => s.chunks[target.chunkIndex]);
-  const expressive = usePlayerStore((s) => (chunk ? (chunk.ownVoiceId && chunk.expressive !== undefined ? chunk.expressive : s.expressive[chunk.language]) : true));
-  const voiceId = usePlayerStore((s) => (chunk ? s.voices[chunk.language] : null));
-  const tier = usePlayerStore((s) => (chunk ? s.tiers[chunk.language] : 'natural'));
-  const { toast } = useToast();
-  const [sending, setSending] = useState(false);
-  const voice = useVoice(voiceId);
 
   const sentence = chunk?.sentences[target.sentenceIndex];
   const range: Range = target.range ?? (sentence ? { start: sentence.start, end: sentence.end } : { start: 0, end: 0 });
@@ -81,13 +74,11 @@ function Editor({ target, onClose, onDescribe }: { target: ExpressionTarget; onC
     setError(null);
     try {
       // Sounds first, so the emotion's save carries them
-      if (sound !== soundAt(chunk.expressions, range.start)) {
-        const withSound = setSound(chunk.expressions, range.start, sound);
-        audioEngine.setExpressions(chunk.index, await expressionsApi.setChunk(documentId, chunk.index, withSound));
-      }
+      if (sound !== soundAt(chunk.expressions, range.start)) await saveExpressions(chunk.index, setSound(chunk.expressions, range.start, sound));
       await applyEmotion(chunk.index, range, emotion, { strong: !!emotion && strong, direction: emotion ? direction : undefined, replay: true });
       haptics.success();
-      onClose(true);
+      // A voice that reads plainly has nothing new to play: carry on from where it was paused
+      onClose(audioEngine.takesEmotions(chunk.index));
     } catch (e) {
       haptics.error();
       setError(getErrorMessage(e));
@@ -97,27 +88,6 @@ function Editor({ target, onClose, onDescribe }: { target: ExpressionTarget; onC
 
   const selected = chunk.text.slice(range.start, range.end);
   const partial = range.start !== sentence.start || range.end !== sentence.end;
-
-  // The paragraph around this line, within the part of the document that's loaded
-  const paragraph: Range = (() => {
-    let first = target.sentenceIndex;
-    while (first > 0 && !chunk.sentences[first].paragraphStart) first--;
-    let last = target.sentenceIndex;
-    while (last + 1 < chunk.sentences.length && !chunk.sentences[last + 1].paragraphStart) last++;
-    return { start: chunk.sentences[first].start, end: chunk.sentences[last].end };
-  })();
-  const paragraphIsLonger = paragraph.start !== range.start || paragraph.end !== range.end;
-
-  const send = async (part: Range) => {
-    setSending(true);
-    try {
-      await shareVoiceNote({ documentId, chunk, range: part, tier, voiceId });
-    } catch (e) {
-      toast.show({ variant: 'danger', label: getErrorMessage(e) });
-    } finally {
-      setSending(false);
-    }
-  };
 
   const pick = (id: EmotionId | null) => {
     haptics.tap();
@@ -132,7 +102,7 @@ function Editor({ target, onClose, onDescribe }: { target: ExpressionTarget; onC
       <ScrollView style={{ maxHeight: 470 }} contentContainerClassName="gap-4" keyboardShouldPersistTaps="handled">
         <View className="rounded-2xl bg-surface-secondary px-4 py-3">
           <Text className="text-[16px] leading-[24px]" style={emotion ? { backgroundColor: tint(emotion) } : undefined} numberOfLines={5}>
-            &ldquo;{selected.trim()}&rdquo;
+            {quoted(selected)}
           </Text>
         </View>
 
@@ -160,17 +130,21 @@ function Editor({ target, onClose, onDescribe }: { target: ExpressionTarget; onC
           </View>
         ) : null}
 
-        <Pressable
-          onPress={() => onDescribe({ chunkIndex: chunk.index, ...range })}
-          accessibilityRole="button"
-          className="flex-row items-center gap-3 rounded-2xl border border-dashed border-border px-4 py-3 active:opacity-70"
-        >
-          <MessageSquareQuote size={19} color={t.accent} />
-          <View className="flex-1">
-            <Text className="text-[15px] font-semibold">Say it in your own words</Text>
-            <Text variant="caption">“Like a scared little child”, typed or spoken</Text>
-          </View>
-        </Pressable>
+        {/* The two ways that aren't a list of feelings, side by side so neither is buried */}
+        <View className="flex-row gap-2">
+          <OwnWay
+            icon={<Mic size={19} color={t.accent} />}
+            title="Say it yourself"
+            detail="The voice follows you"
+            onPress={() => onDescribe({ chunkIndex: chunk.index, ...range, way: 'say' })}
+          />
+          <OwnWay
+            icon={<Text className="text-[17px] leading-5">✍️</Text>}
+            title="Describe it"
+            detail="“like a scared child”"
+            onPress={() => onDescribe({ chunkIndex: chunk.index, ...range, way: 'describe' })}
+          />
+        </View>
 
         {showSounds ? (
           <Section title="Sound before it">
@@ -185,38 +159,31 @@ function Editor({ target, onClose, onDescribe }: { target: ExpressionTarget; onC
           </Pressable>
         )}
 
-        {!expressive ? (
-          <View className="flex-row gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3.5 py-3">
-            <Info size={18} color="#d97706" style={{ marginTop: 1 }} />
-            <Text className="flex-1 text-[14px] leading-[20px] text-amber-700 dark:text-amber-300">
-              {voice?.name ?? 'This voice'} reads without emotions. Your choices are saved and play with any HD voice, like Nova or Eleanor.
-            </Text>
-          </View>
-        ) : null}
+        <PlainVoiceNotice chunkIndex={chunk.index} />
       </ScrollView>
 
       <InlineAlert message={error} />
       <PrimaryButton
-        label={changed ? 'Apply & listen' : 'Choose how it sounds'}
+        label={changed ? 'Apply and listen' : 'Choose how it sounds'}
         variant="primary"
         size="md"
         isDisabled={!changed}
         isLoading={saving}
         onPress={() => void apply()}
       />
-      <View className="flex-row items-center justify-center gap-1">
-        <Send size={15} color={t.accent} />
-        <Text variant="caption">Send as a voice note:</Text>
-        <Pressable onPress={() => void send(range)} disabled={sending} accessibilityRole="button" className="rounded-full px-2 py-1.5 active:bg-default">
-          <Text className="text-[14px] font-semibold text-accent">{partial ? 'these words' : 'this line'}</Text>
-        </Pressable>
-        {paragraphIsLonger ? (
-          <Pressable onPress={() => void send(paragraph)} disabled={sending} accessibilityRole="button" className="rounded-full px-2 py-1.5 active:bg-default">
-            <Text className="text-[14px] font-semibold text-accent">paragraph</Text>
-          </Pressable>
-        ) : null}
-      </View>
     </View>
+  );
+}
+
+function OwnWay({ icon, title, detail, onPress }: { icon: ReactNode; title: string; detail: string; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`${title}. ${detail}`} className="flex-1 gap-1.5 rounded-2xl bg-accent-soft-bg p-3.5 active:opacity-70">
+      {icon}
+      <View>
+        <Text className="text-[15px] font-semibold">{title}</Text>
+        <Text className="text-[12.5px] leading-[17px] text-accent-soft-fg" numberOfLines={1}>{detail}</Text>
+      </View>
+    </Pressable>
   );
 }
 

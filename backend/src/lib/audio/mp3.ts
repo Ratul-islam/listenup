@@ -63,6 +63,27 @@ export function audioFrames(input: Buffer) {
   return input.subarray(frames[0].offset, last.offset + last.length)
 }
 
+/**
+ * The audio frames that overlap startMs–endMs, so the MP3 is shortened
+ * without re-encoding. The first frame kept may lean on bits in a frame cut
+ * off before it; decoders play that one frame as silence, so cut inside silence.
+ */
+export function cutFrames(input: Buffer, startMs: number, endMs: number) {
+  const { frames } = walkFrames(input)
+  const kept: Buffer[] = []
+  let at = 0
+  let durationMs = 0
+  for (const f of frames) {
+    const ms = (f.samples / f.sampleRate) * 1000
+    if (at + ms > startMs && at < endMs) {
+      kept.push(input.subarray(f.offset, f.offset + f.length))
+      durationMs += ms
+    }
+    at += ms
+  }
+  return { audio: Buffer.concat(kept), durationMs: Math.round(durationMs) }
+}
+
 /** Sample rate of an MP3's first audio frame (null if it has none) */
 export function mp3SampleRate(input: Buffer) {
   return walkFrames(input).frames[0]?.sampleRate ?? null

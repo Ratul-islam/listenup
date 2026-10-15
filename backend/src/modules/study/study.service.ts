@@ -86,15 +86,16 @@ export class StudyService {
     const saved = await this.studyRepository.find(documentId, kind)
     if (saved && saved.sourceKey === sourceKey && !fresh) return { kind, content: saved.content, createdAt: saved.createdAt }
 
-    const content = kind === 'summary' ? await this.summarise(doc.title, text, language) : await this.quiz(doc.title, text, language)
+    const content = kind === 'summary' ? await this.summarise(userId, doc.title, text, language) : await this.quiz(userId, doc.title, text, language)
     const row = await this.studyRepository.save(documentId, kind, sourceKey, content as object)
     return { kind, content: row.content, createdAt: row.updatedAt }
   }
 
-  private async ask(system: string, title: string, text: string) {
+  private async ask(userId: string, system: string, title: string, text: string) {
     return chatCompletion(
       {
         model: env.OPENROUTER_TEXT_MODEL,
+        userId,
         system,
         content: [{ type: 'text', text: `Title: ${title}\n\n${text}` }],
         json: true,
@@ -104,26 +105,26 @@ export class StudyService {
     )
   }
 
-  private async summarise(title: string, text: string, language: string): Promise<Summary> {
+  private async summarise(userId: string, title: string, text: string, language: string): Promise<Summary> {
     const system =
       `You help people learn from what they read. Write in ${language}. ` +
       'Reply as JSON: {"summary": a clear 120–200 word overview, "keyPoints": 5 to 8 short key points, one idea each}. ' +
       'Use only what the document says; do not add outside facts.'
     for (let attempt = 0; attempt < 2; attempt++) {
-      const parsed = parseJson(await this.ask(system, title, text))
+      const parsed = parseJson(await this.ask(userId, system, title, text))
       if (isSummary(parsed)) return { summary: parsed.summary.trim(), keyPoints: parsed.keyPoints.map((p) => p.trim()).filter(Boolean) }
     }
     throw new AppError("Couldn't summarise this document. Try again.", 502, 'PROVIDER_ERROR')
   }
 
-  private async quiz(title: string, text: string, language: string): Promise<Quiz> {
+  private async quiz(userId: string, title: string, text: string, language: string): Promise<Quiz> {
     const system =
       `You write multiple-choice quizzes that test understanding of a document, in ${language}, ` +
       `in the style of school and job exams. Make ${QUIZ_QUESTIONS} questions that each have exactly 4 options and one correct answer, ` +
       'mixing easy and harder ones, covering the whole document, and answerable from the document alone. Vary which option is correct. ' +
       'Reply as JSON: {"questions": [{"question": string, "options": [4 strings], "answer": index of the correct option (0-3), "explanation": one sentence}]}.'
     for (let attempt = 0; attempt < 2; attempt++) {
-      const parsed = parseJson(await this.ask(system, title, text))
+      const parsed = parseJson(await this.ask(userId, system, title, text))
       if (isQuiz(parsed)) return { questions: parsed.questions.slice(0, QUIZ_QUESTIONS) }
     }
     throw new AppError("Couldn't make a quiz for this document. Try again.", 502, 'PROVIDER_ERROR')

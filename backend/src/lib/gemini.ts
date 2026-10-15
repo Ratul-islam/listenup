@@ -9,7 +9,7 @@ export interface GeminiSpeechRequest {
   /** OpenRouter-style id ("google/gemini-3.8-flash-lite-tts") or Google's own */
   model: string
   text: string
-  /** Prebuilt voice ("Sulafat") */
+  /** Prebuilt voice ("Sulafat"), or the id of a voice made with createReplicatedVoice() */
   voice: string
   /** Delivery direction, sent as speech metadata rather than spoken */
   style?: string
@@ -54,29 +54,31 @@ function toPcm(audio: Buffer, mimeType: string | undefined) {
  */
 export async function geminiSpeech({ model, text, voice, style, tier, timeoutMs }: GeminiSpeechRequest): Promise<GeminiSpeech> {
   if (!env.GEMINI_API_KEY) throw new AppError('GEMINI_API_KEY is not set', 500, 'PROVIDER_ERROR')
+  const slow = (e: unknown): never => {
+    if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new AppError(`Google ${tier} speech timed out after ${timeoutMs}ms`, 504, 'PROVIDER_TIMEOUT')
+    }
+    throw e
+  }
   const res = await fetch(`${BASE_URL}/interactions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
     signal: AbortSignal.timeout(timeoutMs),
     body: JSON.stringify({
-      model: model.replace(/^google\//, ''),
+      model: googleModel(model),
       input: [{ type: 'user_input', content: [{ type: 'text', text, ...(style && { annotations: [{ type: 'speech_metadata', style }] }) }] }],
       response_format: { type: 'audio' },
       generation_config: { speech_config: [{ voice }] },
       service_tier: tier,
       store: false,
     }),
-  }).catch((e: unknown) => {
-    if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
-      throw new AppError(`Google ${tier} speech timed out after ${timeoutMs}ms`, 504, 'PROVIDER_TIMEOUT')
-    }
-    throw e
-  })
+  }).catch(slow)
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300)
     throw new AppError(`Google ${tier} speech failed (${res.status}): ${detail}`, res.status, 'PROVIDER_ERROR')
   }
-  const body = (await res.json()) as InteractionResponse
+  // The timeout also covers reading the answer, which carries the audio
+  const body = (await res.json().catch(slow)) as InteractionResponse
   const audio = (body.steps ?? [])
     .filter((s) => s.type === 'model_output')
     .flatMap((s) => s.content ?? [])
@@ -84,4 +86,87 @@ export async function geminiSpeech({ model, text, voice, style, tier, timeoutMs 
     .at(-1)
   if (!audio?.data) throw new AppError('Google returned no audio', 502, 'PROVIDER_ERROR')
   return { ...toPcm(Buffer.from(audio.data, 'base64'), audio.mime_type), tier: body.service_tier ?? tier }
+}
+
+/** Google's own name for a model ("gemini-3.8-flash-lite-tts") */
+const googleModel = (model: string) => model.replace(/^google\//, '')
+
+// A stored voice ("voice_…", kept a year) or a stateless one ("voicekey_…", kept 7 days, not counted against the 200)
+const VOICE_ID = /^voice(key)?_[\w-]+$/
+
+/** The stored voice's id, wherever the answer carries it */
+function voiceIdIn(body: unknown, depth = 0): string | null {
+  if (typeof body === 'string') return VOICE_ID.test(body) ? body : null
+  if (!body || typeof body !== 'object' || depth > 4) return null
+  const known = body as { replicated_voice?: { id?: unknown }; id?: unknown }
+  for (const id of [known.replicated_voice?.id, known.id]) if (typeof id === 'string' && VOICE_ID.test(id)) return id
+  for (const value of Object.values(body)) {
+    const id = voiceIdIn(value, depth + 1)
+    if (id) return id
+  }
+  return null
+}
+
+export interface ReplicatedVoiceRequest {
+  /** The model the voice will speak with (kept with it); Google makes the voice with its own default */
+  model: string
+  /** Shown in Google's console; no personal details */
+  displayName: string
+  /** 10 to 30 seconds of the speaker reading, as WAV */
+  sourceWav: Buffer
+  /** The same speaker saying Google's consent sentence, as WAV */
+  consentWav: Buffer
+  timeoutMs?: number
+  /** False: a stateless voice key, kept by Google for 7 days and not counted against the project's 200 stored voices */
+  store?: boolean
+}
+
+/**
+ * Makes a voice from a recording of its owner ("voice replication"), stored at
+ * Google under this project for a year (200 at most). Google checks that the
+ * consent sentence is said, and by the same person. Returns the voice's id,
+ * used like a prebuilt voice's name. Errors keep Google's HTTP status.
+ */
+export async function createReplicatedVoice({ displayName, sourceWav, consentWav, timeoutMs = 120_000, store = true }: ReplicatedVoiceRequest) {
+  if (!env.GEMINI_API_KEY) throw new AppError('GEMINI_API_KEY is not set', 500, 'PROVIDER_ERROR')
+  const wav = (audio: Buffer) => ({ mime_type: 'audio/wav', data: audio.toString('base64') })
+  const res = await fetch(`${BASE_URL}/voices`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+    signal: AbortSignal.timeout(timeoutMs),
+    body: JSON.stringify({
+      store,
+      // No model: the speech models don't make voices ("does not support Voice Replication", Oct 2026). Google's
+      // default makes it, and the voice then speaks with any speech model, ours included
+      voice: { type: 'replicated', display_name: displayName, replicated: { source_audio: wav(sourceWav), consent_audio: wav(consentWav) } },
+    }),
+  }).catch((e: unknown) => {
+    if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) throw new AppError(`Google voice creation timed out after ${timeoutMs}ms`, 504, 'PROVIDER_TIMEOUT')
+    throw e
+  })
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 1500)
+    // Google turns down recordings that fail its checks (the consent not said by the same person, or a voice
+    // that isn't a real person's) with an error it can't put into words: a 500 saying "failed safety checks"
+    // (Oct 2026). That's the recordings, not a passing fault, so it's reported as a refusal
+    const status = /failed safety checks/i.test(detail) ? 422 : res.status
+    throw new AppError(`Google voice creation failed (${res.status}): ${detail.slice(0, 500)}`, status, 'PROVIDER_ERROR')
+  }
+  const id = voiceIdIn(await res.json().catch(() => null))
+  if (!id) throw new AppError('Google made a voice but returned no id for it', 502, 'PROVIDER_ERROR')
+  return id
+}
+
+/** Removes a stored voice at Google. One that's already gone counts as removed. */
+export async function deleteReplicatedVoice(voiceId: string) {
+  if (!env.GEMINI_API_KEY) throw new AppError('GEMINI_API_KEY is not set', 500, 'PROVIDER_ERROR')
+  const res = await fetch(`${BASE_URL}/voices/${encodeURIComponent(voiceId)}`, {
+    method: 'DELETE',
+    headers: { 'x-goog-api-key': env.GEMINI_API_KEY },
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!res.ok && res.status !== 404) {
+    const detail = (await res.text().catch(() => '')).slice(0, 300)
+    throw new AppError(`Google voice deletion failed (${res.status}): ${detail}`, res.status, 'PROVIDER_ERROR')
+  }
 }

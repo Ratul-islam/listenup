@@ -17,7 +17,7 @@ const data = <T>(result: { data: T }) => result.data;
 export const authApi = {
   register: (body: Credentials & { name?: string }) => api.post<null>('/auth/register', body),
 
-  verifyEmail: (body: EmailCode) => api.post<AuthSession>('/auth/verify-email', body).then(data),
+  verifyEmail: (body: EmailCode & { password: string }) => api.post<AuthSession>('/auth/verify-email', body).then(data),
 
   resendVerification: (email: string) => api.post<null>('/auth/resend-verification', { email }),
 

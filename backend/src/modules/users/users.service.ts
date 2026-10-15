@@ -3,7 +3,9 @@ import type { User } from '../../generated/prisma/client.js'
 import { storage } from '../../lib/storage/storage.js'
 import { AppError } from '../../utils/AppError.js'
 import { sendEmail } from '../../utils/email.js'
+import type { OwnVoiceService } from '../own-voice/own-voice.service.js'
 import { planFor } from '../plans/plan-catalog.js'
+import { forgetUserSessions } from '../auth/session-check.js'
 import { accountClosedEmail } from './users.emails.js'
 import type { UsersRepository } from './users.repository.js'
 import type { UpdateProfileBody } from './users.schema.js'
@@ -30,7 +32,10 @@ export function toPublicUser(user: User) {
 export type PublicUser = ReturnType<typeof toPublicUser>
 
 export class UsersService {
-  constructor(private readonly usersRepository: UsersRepository) {}
+  constructor(
+    private readonly usersRepository: UsersRepository,
+    private readonly ownVoices: OwnVoiceService,
+  ) {}
 
   async getProfile(userId: string) {
     const user = await this.usersRepository.findById(userId)
@@ -50,6 +55,7 @@ export class UsersService {
   async closeAccount(userId: string) {
     const user = await this.usersRepository.update(userId, { closedAt: new Date() })
     await this.usersRepository.revokeSessions(userId)
+    forgetUserSessions(userId)
     const deleteAfter = deletionDate(user.closedAt!)
     await sendEmail({ to: user.email, ...accountClosedEmail(deleteAfter) }).catch((e) =>
       console.error(`[users] closure email to ${userId} failed`, e),
@@ -62,8 +68,16 @@ export class UsersService {
     const cutoff = new Date(Date.now() - ACCOUNT_GRACE_DAYS * DAY_MS)
     const users = await this.usersRepository.findClosedBefore(cutoff)
     for (const user of users) {
+      // Their own voice lives at Google too; if it can't be removed there, the account waits for the next run
+      try {
+        await this.ownVoices.remove(user.id)
+      } catch (e) {
+        console.error(`[users] couldn't erase the own voice of ${user.id}; will retry`, e)
+        continue
+      }
       await Promise.all([
         storage.deletePrefix(`documents/${user.id}`),
+        storage.deletePrefix(`covers/${user.id}`),
         ...user.documents.flatMap((d) => [storage.deletePrefix(`audio/${d.id}`), storage.deletePrefix(`exports/${d.id}`)]),
       ])
       await this.usersRepository.delete(user.id)

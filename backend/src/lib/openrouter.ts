@@ -49,6 +49,14 @@ const styleOptions = (style: string) => ({
 
 /** POST /audio/speech (OpenAI-compatible); returns the audio and its content type */
 export async function createSpeech(req: SpeechRequest, timeoutMs = 60_000) {
+  // A provider that hangs shouldn't hold playback for minutes; say so plainly instead
+  const slow = (e: unknown): never => {
+    if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      console.error(`[openrouter] speech timed out after ${timeoutMs}ms (${req.model})`)
+      throw new AppError('The voice service is slow right now. Try again in a moment.', 503, 'PROVIDER_TIMEOUT')
+    }
+    throw e
+  }
   const res = await fetch(`${BASE_URL}/audio/speech`, {
     method: 'POST',
     headers: headers({ 'Content-Type': 'application/json' }),
@@ -67,20 +75,15 @@ export async function createSpeech(req: SpeechRequest, timeoutMs = 60_000) {
         },
       }),
     }),
-  }).catch((e: unknown) => {
-    // A provider that hangs shouldn't hold playback for minutes; say so plainly instead
-    if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
-      console.error(`[openrouter] speech timed out after ${timeoutMs}ms (${req.model})`)
-      throw new AppError('The voice service is slow right now. Try again in a moment.', 503, 'PROVIDER_TIMEOUT')
-    }
-    throw e
-  })
+  }).catch(slow)
   if (!res.ok) throw await failure(res, 'speech')
-  return { audio: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get('content-type') }
+  // The timeout also covers reading the audio, which some hosts start and then stall on
+  return { audio: Buffer.from(await res.arrayBuffer().catch(slow)), contentType: res.headers.get('content-type') }
 }
 
 type ContentPart =
   | { type: 'text'; text: string }
+  | { type: 'input_audio'; input_audio: { data: string; format: 'mp3' | 'wav' } }
   | { type: 'image_url'; image_url: { url: string } }
   | { type: 'file'; file: { filename: string; file_data: string } }
 
@@ -97,10 +100,36 @@ export interface ChatRequest {
   purpose?: string
   /** How much the model may think first (models that can't, ignore it); thinking is billed as output */
   reasoning?: 'low' | 'medium' | 'high'
+  /** Whose request it is: its cost counts in their share of the daily spending caps (free or paid). Leave out for the app's own */
+  userId?: string | null
 }
 
-/** Single-turn chat completion; returns the assistant text */
+/** What one text request used, from OpenRouter's usage report */
+export interface ChatUsage {
+  promptTokens: number
+  completionTokens: number
+  /** OpenRouter's own figure in USD, when it sends one */
+  costUsd: number | null
+}
+
+/** Keeps text-AI spending inside the daily caps; the usage module provides it */
+export interface TextSpendGuard {
+  /** Before a request: throws when today's cap is spent. What it returns is handed to `after`. */
+  before(req: ChatRequest): Promise<unknown>
+  /** After a request: records what it cost */
+  after(req: ChatRequest, usage: ChatUsage, token: unknown): Promise<void>
+}
+
+let spendGuard: TextSpendGuard | null = null
+
+/** Every chat completion from now on is checked against, and counted in, the daily caps */
+export function setTextSpendGuard(guard: TextSpendGuard) {
+  spendGuard = guard
+}
+
+/** Single-turn chat completion; returns the assistant text. Its cost counts toward the daily caps. */
 export async function chatCompletion(req: ChatRequest, timeoutMs = 120_000) {
+  const token = await spendGuard?.before(req)
   const res = await fetch(`${BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: headers({ 'Content-Type': 'application/json' }),
@@ -116,9 +145,22 @@ export async function chatCompletion(req: ChatRequest, timeoutMs = 120_000) {
       ...(req.pdfEngine && { plugins: [{ id: 'file-parser', pdf: { engine: req.pdfEngine } }] }),
       ...(req.json && { response_format: { type: 'json_object' } }),
       ...(req.reasoning && { reasoning: { effort: req.reasoning, exclude: true } }),
+      // Ask for what it cost, for the daily caps
+      usage: { include: true },
     }),
   })
   if (!res.ok) throw await failure(res, req.purpose ?? 'text recognition')
-  const body = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+  const body = (await res.json()) as {
+    choices?: { message?: { content?: string } }[]
+    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }
+  }
+  if (spendGuard) {
+    const usage = {
+      promptTokens: body.usage?.prompt_tokens ?? 0,
+      completionTokens: body.usage?.completion_tokens ?? 0,
+      costUsd: typeof body.usage?.cost === 'number' ? body.usage.cost : null,
+    }
+    await spendGuard.after(req, usage, token).catch((e) => console.warn('[openrouter] text spend not recorded', e))
+  }
   return body.choices?.[0]?.message?.content ?? ''
 }

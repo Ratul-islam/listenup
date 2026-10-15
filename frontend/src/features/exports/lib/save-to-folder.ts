@@ -6,6 +6,13 @@ const FOLDER_KEY = 'settings.exportFolder';
 /** Thrown when the listener closes the folder picker */
 export class FolderPickCancelled extends Error {}
 
+/** Thrown by a save nobody can be asked about (it finished in the background) when there's no folder to save to */
+export class NoFolder extends Error {
+  constructor() {
+    super('The download folder is gone. Choose a folder to save the MP3.');
+  }
+}
+
 const baseName = (title: string) => title.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 80) || 'ListenUp audio';
 
 /** "Title", or "Title (2)" etc., so none of the files about to be saved replace one already there */
@@ -42,6 +49,11 @@ function savedFolder() {
 
 export const savedFolderName = () => savedFolder()?.name ?? null;
 
+/** The folder downloads go to, asking for one the first time (or when `choose` is set) */
+export async function ensureFolder(choose = false) {
+  return (!choose && savedFolder()) || (await pickFolder());
+}
+
 /** A file to save: its link and extension ("mp3", "srt", "vtt") */
 export interface SaveFile {
   url: string;
@@ -51,11 +63,12 @@ export interface SaveFile {
 /**
  * Downloads files (an MP3, and its subtitles) and saves them side by side
  * under one name in the listener's chosen folder, asking for the folder the
- * first time (or when `chooseFolder` is set). Downloads go to the cache first
- * and are copied natively, so big files never sit in JS memory.
+ * first time (or when `chooseFolder` is set) unless `ask` is off. Downloads go
+ * to the cache first and are copied natively, so big files never sit in JS memory.
  */
-export async function saveToFolder(files: SaveFile[], title: string, { chooseFolder = false } = {}) {
-  const dir = (!chooseFolder && savedFolder()) || (await pickFolder());
+export async function saveToFolder(files: SaveFile[], title: string, { chooseFolder = false, ask = true } = {}) {
+  const dir = (!chooseFolder && savedFolder()) || (ask ? await pickFolder() : null);
+  if (!dir) throw new NoFolder();
   const base = freeBase(dir, title, files.map((f) => f.ext));
 
   // Copying a file into a folder names the copy after the file, so download it under the final name.

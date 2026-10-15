@@ -86,3 +86,11 @@ export function wordsOf(text: string, range: Range): Range[] {
   }
   return words;
 }
+
+/** The line a listener means when they react: the one that just finished, early in the next */
+export function lineJustHeard(sentences: Range[], sentenceIndex: number, spokenChars: number) {
+  const current = sentences[sentenceIndex];
+  const length = current.end - current.start;
+  const previous = sentenceIndex > 0 && spokenChars < Math.min(length * 0.25, 30) ? sentences[sentenceIndex - 1] : null;
+  return { index: previous ? sentenceIndex - 1 : sentenceIndex, line: { start: (previous ?? current).start, end: (previous ?? current).end } };
+}

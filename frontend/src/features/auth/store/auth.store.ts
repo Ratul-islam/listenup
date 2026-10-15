@@ -2,6 +2,8 @@ import { create } from 'zustand';
 
 import { forgetPurchaser } from '@/features/billing/lib/purchases';
 import { audioEngine } from '@/features/player/engine/audio-engine';
+import { updateHomeWidget } from '@/features/widget/home-widget';
+import { SIGNED_OUT } from '@/features/widget/widget-snapshot';
 import { ApiError } from '@/lib/api/api-error';
 import { registerAuthHandlers } from '@/lib/api/client';
 import { queryClient } from '@/lib/query-client';
@@ -86,6 +88,8 @@ async function persistSession(session: AuthSession) {
 async function clearSession() {
   void audioEngine.close();
   void forgetPurchaser();
+  // The home-screen widget stops showing what this account was listening to
+  updateHomeWidget(SIGNED_OUT);
   await Promise.all([secureStorage.remove(REFRESH_TOKEN_KEY), secureStorage.remove(USER_KEY)]);
   useAuthStore.setState({ status: 'signedOut', user: null, accessToken: null });
   queryClient.clear();

@@ -33,7 +33,7 @@ export default function InviteScreen() {
     await Share.share({
       message:
         `I listen to my PDFs, articles and notes with ListenUp. Use my code ${data.code} and we both get ` +
-        `${data.minutesEach} minutes of its most natural voices: ${data.link}`,
+        `free minutes of its most natural voices: ${data.link}`,
     });
   };
 
@@ -74,11 +74,11 @@ export default function InviteScreen() {
                 <Gift size={26} color={t.accent} />
               </View>
               <Text variant="h2" className="text-center">
-                You both get {data.minutesEach} Expressive minutes
+                You both get Expressive minutes
               </Text>
               <Text variant="lead" className="text-center">
-                When a friend joins with your code, confirms their email and listens for {data.listenMinutesNeeded} minutes, you each get{' '}
-                {data.minutesEach} minutes of the voices with emotions. They never expire.
+                When a friend joins with your code, confirms their email and listens for {data.listenMinutesNeeded} minutes, you get{' '}
+                {data.minutesEach} minutes of the voices with emotions, and so do they. They never expire.
               </Text>
               <View className="items-center gap-1 pt-1">
                 <Text variant="caption">Your code</Text>
@@ -112,8 +112,8 @@ export default function InviteScreen() {
                 <Text variant="title">You joined with {data.invitedBy.name ? `${data.invitedBy.name}'s` : "a friend's"} code</Text>
                 <Text variant="caption">
                   {data.invitedBy.rewarded
-                    ? `You both got ${data.minutesEach} Expressive minutes.`
-                    : `Listen for ${data.listenMinutesNeeded} minutes and you both get ${data.minutesEach} Expressive minutes.`}
+                    ? `You got ${data.minutesEach} Expressive minutes, and so did your friend.`
+                    : `Listen for ${data.listenMinutesNeeded} minutes and you get ${data.minutesEach} Expressive minutes, and so does your friend.`}
                 </Text>
               </GlassCard>
             ) : data.canRedeem ? (

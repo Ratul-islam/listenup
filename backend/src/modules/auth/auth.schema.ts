@@ -20,6 +20,10 @@ export const emailSchema = z.object({ email })
 
 export const emailOtpSchema = z.object({ email, otp })
 
+// The password typed at sign-up (or sign-in) comes with the code: whoever proves the
+// address sets it (AuthService.verifyEmail)
+export const verifyEmailSchema = z.object({ email, otp, password })
+
 export const refreshTokenSchema = z.object({
   refreshToken: z.string().min(1),
 })
@@ -42,6 +46,7 @@ export type RegisterBody = z.infer<typeof registerSchema>
 export type LoginBody = z.infer<typeof loginSchema>
 export type EmailBody = z.infer<typeof emailSchema>
 export type EmailOtpBody = z.infer<typeof emailOtpSchema>
+export type VerifyEmailBody = z.infer<typeof verifyEmailSchema>
 export type RefreshTokenBody = z.infer<typeof refreshTokenSchema>
 export type ResetPasswordBody = z.infer<typeof resetPasswordSchema>
 export type OAuthParams = z.infer<typeof oauthParamsSchema>

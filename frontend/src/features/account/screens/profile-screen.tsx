@@ -15,6 +15,7 @@ import { ScreenHeader, SettingsRow, SettingsSection } from '@/components/ui/sett
 import { Text } from '@/components/ui/text';
 import { authApi } from '@/features/auth/api/auth.api';
 import { useSignOut } from '@/features/auth/hooks/use-auth-mutations';
+import { CommunitySettings } from '@/features/community/components/community-settings';
 import { useAuthStore } from '@/features/auth/store/auth.store';
 import { initials } from '@/features/voices/voice-catalog';
 import { getErrorMessage } from '@/lib/api/api-error';
@@ -90,6 +91,8 @@ export default function ProfileScreen() {
         </View>
 
         <SettingsSections />
+
+        <CommunitySettings />
 
         <SettingsSection title="Name">
           <View className="flex-row items-center gap-2 p-1.5">

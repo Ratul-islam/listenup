@@ -1,11 +1,14 @@
 import { Spinner } from 'heroui-native';
-import { Moon, Pause, Play, RotateCcw, RotateCw } from 'lucide-react-native';
+import { Moon, RotateCcw, RotateCw } from 'lucide-react-native';
 import { useState, type ReactNode } from 'react';
 import { Pressable, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 
 import { ActionSheet, SheetAction } from '@/components/ui/action-sheet';
+import { PlayPauseIcon } from '@/components/ui/play-pause-icon';
 import { Text } from '@/components/ui/text';
 import { haptics } from '@/lib/haptics';
+import { usePressScale } from '@/lib/use-press-scale';
 import { cardShadow, useTokens } from '@/lib/use-tokens';
 
 import { audioEngine } from '../engine/audio-engine';
@@ -23,7 +26,7 @@ function Key({ children, onPress, label, active }: { children: ReactNode; onPres
       }}
       accessibilityRole="button"
       accessibilityLabel={label}
-      className={`size-14 items-center justify-center rounded-full ${active ? 'bg-accent-soft-bg' : 'active:bg-default'}`}
+      className={`size-12 items-center justify-center rounded-full ${active ? 'bg-accent-soft-bg' : 'active:bg-default'}`}
     >
       {children}
     </Pressable>
@@ -35,7 +38,7 @@ function SkipIcon({ direction }: { direction: 1 | -1 }) {
   const Icon = direction === 1 ? RotateCw : RotateCcw;
   return (
     <View className="items-center justify-center">
-      <Icon size={28} color={t.foreground} strokeWidth={1.7} />
+      <Icon size={26} color={t.foreground} strokeWidth={1.7} />
       <Text className="absolute text-[9px] font-bold" style={{ marginTop: 2 }}>15</Text>
     </View>
   );
@@ -49,11 +52,12 @@ export function PlayerControls() {
   const speed = usePlayerStore((s) => s.speed);
   const sleepAt = usePlayerStore((s) => s.sleepAt);
   const [sleepOpen, setSleepOpen] = useState(false);
+  const press = usePressScale(0.92);
 
   const nextSpeed = () => audioEngine.setSpeed(SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length] ?? 1);
 
   return (
-    <View className="flex-row items-center justify-between px-1">
+    <View className="flex-row items-center justify-between px-2">
       <Key onPress={nextSpeed} label={`Speed ${speed}x, tap to change`}>
         <Text className="text-[15px] font-semibold" style={{ fontVariant: ['tabular-nums'] }}>{speed}×</Text>
       </Key>
@@ -62,24 +66,22 @@ export function PlayerControls() {
         <SkipIcon direction={-1} />
       </Key>
 
-      <Pressable
-        onPress={() => {
-          haptics.tap();
-          audioEngine.toggle();
-        }}
-        accessibilityRole="button"
-        accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
-        className="size-[76px] items-center justify-center rounded-full bg-accent active:opacity-90"
-        style={{ boxShadow: cardShadow }}
-      >
-        {isBuffering && !isPlaying ? (
-          <Spinner size="md" color={t.accentForeground} />
-        ) : isPlaying ? (
-          <Pause size={30} color={t.accentForeground} fill={t.accentForeground} />
-        ) : (
-          <Play size={30} color={t.accentForeground} fill={t.accentForeground} style={{ marginLeft: 4 }} />
-        )}
-      </Pressable>
+      <Animated.View style={press.style}>
+        <Pressable
+          onPress={() => {
+            haptics.tap();
+            audioEngine.toggle();
+          }}
+          onPressIn={press.onPressIn}
+          onPressOut={press.onPressOut}
+          accessibilityRole="button"
+          accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
+          className="size-16 items-center justify-center rounded-full bg-accent"
+          style={{ boxShadow: cardShadow }}
+        >
+          {isBuffering && !isPlaying ? <Spinner size="md" color={t.accentForeground} /> : <PlayPauseIcon playing={isPlaying} size={26} color={t.accentForeground} />}
+        </Pressable>
+      </Animated.View>
 
       <Key onPress={() => audioEngine.skip(1)} label="Forward 15 seconds">
         <SkipIcon direction={1} />

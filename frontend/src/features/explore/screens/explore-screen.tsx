@@ -1,96 +1,155 @@
-import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
-import { Spinner, useToast } from 'heroui-native';
-import { Pause, Play } from 'lucide-react-native';
-import { useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { useQueryClient } from '@tanstack/react-query';
+import { Spinner } from 'heroui-native';
+import { useMemo, useState } from 'react';
+import { Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CloudBackground } from '@/components/ui/cloud-background';
 import { GlassCard } from '@/components/ui/glass-card';
+import { InlineAlert } from '@/components/ui/inline-alert';
+import { PrimaryButton } from '@/components/ui/primary-button';
+import { Segmented } from '@/components/ui/segmented';
+import { ChoiceChips } from '@/components/ui/settings';
 import { Text } from '@/components/ui/text';
-import { audioEngine } from '@/features/player/engine/audio-engine';
+import { CommunityView, useCommunityLanguages } from '@/features/community/components/community-view';
+import { communityKey } from '@/features/community/hooks';
+import { formatMinutes } from '@/features/player/hooks/use-player';
 import { usePlayerStore } from '@/features/player/store/player.store';
-import type { Voice } from '@/features/voices/api/voices.api';
-import { VoiceAvatar } from '@/features/voices/components/voice-avatar';
-import { useVoices } from '@/features/voices/hooks/use-voices';
-import { isMissingPhoneVoice, missingPhoneVoiceToast, previewUri } from '@/features/voices/lib/voice-preview';
 import { getErrorMessage } from '@/lib/api/api-error';
-import { LANGS, LANGUAGE_NAMES } from '@/lib/languages';
+import { LANGS, LANGUAGE_NAMES, type Lang } from '@/lib/languages';
 import { useTokens } from '@/lib/use-tokens';
 
+import type { CatalogItem } from '../api/catalog.api';
+import { BookCover } from '../components/book-cover';
+import { TitleRow, TitleSheet } from '../components/title-sheet';
+import { VoicesRow } from '../components/voices-row';
+import { useCatalog } from '../hooks/use-catalog';
+
+// Up to this long is a "short listen": one sitting
+const SHORT_MINUTES = 60;
+const SHORT_COVER = 128;
+
+type Filter = Lang | 'all';
+type Shelf = 'classics' | 'community';
+
+/**
+ * Explore: free classics to listen to, short ones first, in the listener's
+ * languages. Like the shelf, it opens straight on its content: the Classics
+ * and Community switch is the top of the page. Tap one for what it's about and a single "Listen", which puts it
+ * on the shelf and plays it. The voices come last, to hear them. "Community"
+ * holds what listeners publish themselves, and the monthly writing contest.
+ */
 export default function ExploreScreen() {
   const insets = useSafeAreaInsets();
   const t = useTokens();
-  const { toast } = useToast();
-  const { data } = useVoices();
-  const preview = useAudioPlayer(null);
-  const status = useAudioPlayerStatus(preview);
-  const [current, setCurrent] = useState<string | null>(null);
-  const [loading, setLoading] = useState<string | null>(null);
+  const client = useQueryClient();
+  const catalog = useCatalog();
   const hasPlayer = usePlayerStore((s) => !!s.documentId);
+  const [shelf, setShelf] = useState<Shelf>('classics');
+  const communityLanguages = useCommunityLanguages(shelf === 'community');
+  const [filter, setFilter] = useState<Filter>('all');
+  const [open, setOpen] = useState<CatalogItem | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const play = async (voice: Voice) => {
-    if (current === voice.id && status.playing) return preview.pause();
-    if (usePlayerStore.getState().isPlaying) audioEngine.pause();
-    setLoading(voice.id);
-    try {
-      preview.replace({ uri: await previewUri(voice) });
-      preview.play();
-      setCurrent(voice.id);
-    } catch (e) {
-      toast.show(isMissingPhoneVoice(e) ? missingPhoneVoiceToast : { variant: 'danger', label: getErrorMessage(e) });
-    } finally {
-      setLoading(null);
-    }
+  const all = useMemo(() => catalog.data ?? [], [catalog.data]);
+  const catalogLanguages = useMemo(() => LANGS.filter((l) => all.some((i) => i.language === l)), [all]);
+  const languages = shelf === 'classics' ? catalogLanguages : LANGS.filter((l) => communityLanguages.includes(l));
+  const items = all.filter((i) => filter === 'all' || i.language === filter);
+  const short = items.filter((i) => i.minutes <= SHORT_MINUTES);
+  const books = items.filter((i) => i.minutes > SHORT_MINUTES);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    await (shelf === 'classics' ? catalog.refetch() : client.invalidateQueries({ queryKey: communityKey })).finally(() => setRefreshing(false));
+  };
+  const switchShelf = (next: Shelf) => {
+    setShelf(next);
+    // A language with nothing on the other shelf would show it empty
+    if (filter !== 'all' && !(next === 'classics' ? catalogLanguages : communityLanguages).includes(filter)) setFilter('all');
   };
 
   return (
     <CloudBackground>
       <ScrollView
-        contentContainerStyle={{ paddingTop: insets.top + 16, paddingBottom: insets.bottom + (hasPlayer ? 190 : 120), paddingHorizontal: 20, gap: 24 }}
+        contentContainerStyle={{ paddingTop: insets.top + 12, paddingBottom: insets.bottom + (hasPlayer ? 190 : 120), paddingHorizontal: 20, gap: 22 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} tintColor={t.accent} colors={[t.accent]} />}
       >
-        <View className="gap-1">
-          <Text variant="h1" accessibilityRole="header">Voices</Text>
-          <Text variant="lead">Tap a voice to hear it. Phone voices are free and work offline; Expressive voices add emotions and use your Expressive minutes.</Text>
-        </View>
+        <Segmented<Shelf>
+          options={[
+            { id: 'classics', label: 'Classics' },
+            { id: 'community', label: 'Community' },
+          ]}
+          value={shelf}
+          onChange={switchShelf}
+        />
 
-        {LANGS.map((lang) => (
-          <View key={lang} className="gap-2">
-            <Text variant="label" className="px-1 text-muted">{LANGUAGE_NAMES[lang]}</Text>
-            <GlassCard className="p-2">
-              {(data?.voices ?? [])
-                .filter((v) => v.language === lang)
-                .map((voice) => {
-                  const playing = current === voice.id && status.playing;
-                  return (
+        {languages.length > 1 ? (
+          <View className="-mx-3 -my-3">
+            <ChoiceChips<Filter> options={['all', ...languages]} value={filter} format={(v) => (v === 'all' ? 'All' : LANGUAGE_NAMES[v])} onChange={setFilter} />
+          </View>
+        ) : null}
+
+        {shelf === 'community' ? (
+          <CommunityView filter={filter} />
+        ) : catalog.isPending ? (
+          <Spinner color={t.accent} className="my-10 self-center" />
+        ) : catalog.isError ? (
+          <View className="gap-3">
+            <InlineAlert message={getErrorMessage(catalog.error)} />
+            <PrimaryButton label="Try again" variant="secondary" onPress={() => void catalog.refetch()} />
+          </View>
+        ) : (
+          <>
+            {short.length ? (
+              <View className="gap-3">
+                <SectionTitle title="Short listens" detail="Under an hour" />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} className="-mx-5" contentContainerClassName="gap-4 px-5 pb-2">
+                  {short.map((item) => (
                     <Pressable
-                      key={voice.id}
-                      onPress={() => void play(voice)}
+                      key={item.id}
+                      onPress={() => setOpen(item)}
                       accessibilityRole="button"
-                      accessibilityLabel={playing ? `Stop ${voice.name}` : `Hear ${voice.name}`}
-                      className="flex-row items-center gap-3 rounded-2xl p-2.5 active:bg-default"
+                      accessibilityLabel={`${item.englishTitle ?? item.title}, ${item.author}, ${formatMinutes(item.minutes * 60)}${item.documentId ? ', on your shelf' : ''}`}
+                      className="gap-2 active:opacity-80"
+                      style={{ width: SHORT_COVER }}
                     >
-                      <VoiceAvatar name={voice.name} size={40} />
-                      <View className="flex-1">
-                        <Text className="text-[16px] font-semibold">{voice.name}</Text>
-                        <Text variant="caption" numberOfLines={1}>{voice.accent}, {voice.style.toLowerCase()}{voice.expressive ? ' · Expressive' : ''}</Text>
-                      </View>
-                      <View className="size-10 items-center justify-center rounded-full bg-accent-soft-bg">
-                        {loading === voice.id ? (
-                          <Spinner size="sm" color={t.accent} />
-                        ) : playing ? (
-                          <Pause size={15} color={t.accent} fill={t.accent} />
-                        ) : (
-                          <Play size={15} color={t.accent} fill={t.accent} style={{ marginLeft: 2 }} />
-                        )}
+                      <BookCover item={item} width={SHORT_COVER} added={!!item.documentId} />
+                      <View className="gap-0.5 px-0.5">
+                        <Text className="text-[14px] font-semibold" numberOfLines={1}>{item.englishTitle ?? item.title}</Text>
+                        <Text variant="caption">{formatMinutes(item.minutes * 60)}</Text>
                       </View>
                     </Pressable>
-                  );
-                })}
-            </GlassCard>
-          </View>
-        ))}
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null}
+
+            {books.length ? (
+              <View className="gap-3">
+                <SectionTitle title="Books" detail="To come back to" />
+                <GlassCard className="p-2">
+                  {books.map((item) => (
+                    <TitleRow key={item.id} item={item} onPress={() => setOpen(item)} />
+                  ))}
+                </GlassCard>
+              </View>
+            ) : null}
+          </>
+        )}
+
+        {shelf === 'classics' ? <VoicesRow languages={filter === 'all' ? languages : [filter]} /> : null}
       </ScrollView>
+
+      <TitleSheet item={open} onClose={() => setOpen(null)} />
     </CloudBackground>
+  );
+}
+
+function SectionTitle({ title, detail }: { title: string; detail: string }) {
+  return (
+    <View className="flex-row items-baseline gap-2 px-1">
+      <Text variant="label">{title}</Text>
+      <Text variant="caption">{detail}</Text>
+    </View>
   );
 }

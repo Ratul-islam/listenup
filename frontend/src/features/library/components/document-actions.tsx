@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useToast } from 'heroui-native';
-import { BookOpenCheck, Check, CloudDownload, Download, Folder, FolderInput, FolderPlus, Languages, Library, ListX, Pencil, PenLine, Podcast, RefreshCw, ScanText, Trash2, X } from 'lucide-react-native';
+import { BookOpenCheck, Check, CloudDownload, Download, Folder, FolderInput, FolderPlus, Globe, Languages, Library, ListX, Pencil, PenLine, Podcast, RefreshCw, ScanText, Trash2, X } from 'lucide-react-native';
 import { useState } from 'react';
 import { ScrollView, TextInput, View } from 'react-native';
 
@@ -127,8 +127,24 @@ export function DocumentActions({ document, onClose, onDeleted }: DocumentAction
   };
 
   if (!document) return null;
-  const canOcr = (document.kind === 'PDF' || document.kind === 'IMAGE') && !document.translatedFromId;
+  // Someone else's writing from Explore stays as they published it
+  const fromCommunity = !!document.publicationId;
+  const canOcr = (document.kind === 'PDF' || document.kind === 'IMAGE') && !document.translatedFromId && !fromCommunity;
   const busy = document.status === 'PENDING' || document.status === 'PROCESSING';
+  // Your own writing (not web pages, books, classics or translations); the server has the last word
+  const canPublish =
+    document.status === 'READY' && !fromCommunity && !document.translatedFromId && !document.fromCatalog && document.kind !== 'WEB' && document.kind !== 'EPUB';
+  const publish = canPublish ? (
+    <SheetAction
+      icon={<Globe size={18} color={t.foreground} />}
+      label="Publish to Explore"
+      detail="Share your writing with other listeners"
+      onPress={() => {
+        close();
+        router.push({ pathname: '/publish/[id]', params: { id: document.id } });
+      }}
+    />
+  ) : null;
 
   return (
     <ActionSheet
@@ -168,6 +184,7 @@ export function DocumentActions({ document, onClose, onDeleted }: DocumentAction
           {document.status === 'READY' ? (
             <SheetAction icon={<Download size={18} color={t.foreground} />} label="Download MP3 and subtitles" onPress={() => setMode('export')} />
           ) : null}
+          {publish}
           <SheetAction
             icon={<Library size={18} color={t.foreground} />}
             label="Move to Soundshelf"
@@ -199,10 +216,11 @@ export function DocumentActions({ document, onClose, onDeleted }: DocumentAction
               onPress={() => setMode('offline')}
             />
           ) : null}
-          {document.status === 'READY' ? (
+          {document.status === 'READY' && !fromCommunity ? (
             <SheetAction icon={<Download size={18} color={t.foreground} />} label="Download MP3 and subtitles" onPress={() => setMode('export')} />
           ) : null}
-          {document.status === 'READY' ? (
+          {publish}
+          {document.status === 'READY' && !fromCommunity ? (
             <SheetAction
               icon={<PenLine size={18} color={t.foreground} />}
               label="Move to Studio"
@@ -210,7 +228,7 @@ export function DocumentActions({ document, onClose, onDeleted }: DocumentAction
               onPress={() => void moveScript(true)}
             />
           ) : null}
-          {document.status === 'READY' ? (
+          {document.status === 'READY' && !fromCommunity ? (
             <SheetAction
               icon={<Podcast size={18} color={t.foreground} />}
               label={document.inPodcast ? 'In your podcast' : 'Add to podcast'}
@@ -230,7 +248,7 @@ export function DocumentActions({ document, onClose, onDeleted }: DocumentAction
               }}
             />
           ) : null}
-          {document.status === 'READY' ? (
+          {document.status === 'READY' && !fromCommunity ? (
             <SheetAction
               icon={<Languages size={18} color={t.foreground} />}
               label="Translate"
@@ -238,7 +256,7 @@ export function DocumentActions({ document, onClose, onDeleted }: DocumentAction
               onPress={() => setMode('translate')}
             />
           ) : null}
-          {document.status === 'READY' || document.status === 'FAILED' ? (
+          {(document.status === 'READY' || document.status === 'FAILED') && !fromCommunity ? (
             <SheetAction
               icon={<ListX size={18} color={t.foreground} />}
               label={document.keepClutter ? 'Skip citations and links' : 'Read citations and links too'}

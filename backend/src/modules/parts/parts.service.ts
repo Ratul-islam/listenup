@@ -2,14 +2,14 @@ import { CHARS_PER_SECOND } from '../../config/constants.js'
 import { Prisma, type DocumentChunk } from '../../generated/prisma/client.js'
 import { AppError } from '../../utils/AppError.js'
 import { toSummary } from '../documents/documents.service.js'
-import { NO_EXPRESSIONS, normalizeExpressions, readExpressions, type ChunkExpressions, type EmotionMark, type SoundMark } from '../expressions/expression-catalog.js'
+import { NO_EXPRESSIONS, normalizeExpressions, readExpressions, type ChunkExpressions, type EmotionMark, type SoundMark, type SpeakerMark } from '../expressions/expression-catalog.js'
 import { chunkParagraphs, type ChunkDraft } from '../ingestion/text/chunker.js'
 import { documentScripts, isLang, type Lang } from '../ingestion/text/language.js'
 import { lexiconFor } from '../pronunciations/lexicon-cache.js'
 import { readSentenceTakes } from '../tts/render-plan.js'
 import { readLock } from '../tts/tts.service.js'
 import { findVoice } from '../voices/voice-catalog.js'
-import type { VoicesService } from '../voices/voices.service.js'
+import { mainLanguage, type VoicesService } from '../voices/voices.service.js'
 import type { PartDraft, PartsRepository } from './parts.repository.js'
 import type { EditPartBody, InsertPartBody, ReplaceBody } from './parts.schema.js'
 
@@ -61,7 +61,7 @@ const paragraphsOf = (text: string) =>
  * were removed are dropped.
  */
 function carryMarks(oldText: string, old: ChunkExpressions, drafts: ChunkDraft[]): ChunkExpressions[] {
-  const out = drafts.map(() => ({ emotions: [] as EmotionMark[], sounds: [] as SoundMark[] }))
+  const out = drafts.map(() => ({ emotions: [] as EmotionMark[], sounds: [] as SoundMark[], speakers: [] as SpeakerMark[] }))
   const find = (words: string, from: { part: number; at: number }) => {
     for (let p = from.part; p < drafts.length; p++) {
       const at = drafts[p].text.indexOf(words, p === from.part ? from.at : 0)
@@ -75,6 +75,15 @@ function carryMarks(oldText: string, old: ChunkExpressions, drafts: ChunkDraft[]
     const found = words && find(words, cursor)
     if (!found) continue
     out[found.part].emotions.push({ ...m, start: found.at, end: found.at + words.length })
+    cursor = { part: found.part, at: found.at + words.length }
+  }
+  // A character's lines follow their words the same way
+  cursor = { part: 0, at: 0 }
+  for (const m of [...old.speakers].sort((a, b) => a.start - b.start)) {
+    const words = oldText.slice(m.start, m.end).trim()
+    const found = words && find(words, cursor)
+    if (!found) continue
+    out[found.part].speakers.push({ ...m, start: found.at, end: found.at + words.length })
     cursor = { part: found.part, at: found.at + words.length }
   }
   cursor = { part: 0, at: 0 }
@@ -147,17 +156,18 @@ export class PartsService {
       return { document: toSummary(await this.partsRepository.markEdited(documentId)), parts: [toPart(chunk)] }
     }
     if (text === undefined || text === chunk.text) {
-      const marks = normalizeExpressions(expressions ?? readExpressions(chunk.expressions), chunk.text.length)
+      const current = readExpressions(chunk.expressions)
+      // App versions from before characters had voices don't send their lines back: they're kept
+      const marks = normalizeExpressions(expressions ? { ...expressions, speakers: expressions.speakers ?? current.speakers } : current, chunk.text.length)
       await this.partsRepository.setExpressions(chunk.id, marks)
       return { document: toSummary(await this.partsRepository.markEdited(documentId)), parts: await this.changed(documentId, index, 1) }
     }
 
     const drafts = this.draft(doc, text)
     // Marks sent with the text are for the new text (one part); otherwise the old ones follow their words
-    const marks =
-      expressions && drafts.length === 1
-        ? [normalizeExpressions(expressions, drafts[0].text.length)]
-        : carryMarks(chunk.text, readExpressions(chunk.expressions), drafts)
+    const carried = carryMarks(chunk.text, readExpressions(chunk.expressions), drafts)
+    // Who says which words always follows the words themselves, wherever the emotions came from
+    const marks = expressions && drafts.length === 1 ? [normalizeExpressions({ ...expressions, speakers: carried[0].speakers }, drafts[0].text.length)] : carried
     // A split part keeps its voice in every piece, and its pause after the last
     const parts: PartDraft[] = drafts.map((d, i) => ({
       ...d,
@@ -195,13 +205,14 @@ export class PartsService {
   ) {
     const data: Prisma.DocumentChunkUncheckedUpdateInput = {}
     if (voiceId !== undefined && voiceId !== chunk.voiceId) {
-      if (voiceId && findVoice(voiceId)?.language !== chunk.language) throw new AppError('That voice doesn’t speak this part’s language', 400, 'INVALID_VOICE')
+      const voice = voiceId ? (findVoice(voiceId) ?? this.voicesService.find(voiceId, await this.voicesService.getPreferences(userId, doc.id))) : undefined
+      if (voiceId && voice?.language !== chunk.language) throw new AppError('That voice doesn’t speak this part’s language', 400, 'INVALID_VOICE')
       data.voiceId = voiceId
     }
     if (pauseAfterMs !== undefined) data.pauseAfterMs = pauseAfterMs
     if (locked === true && !chunk.locked) {
       const own = (data.voiceId as string | null | undefined) ?? chunk.voiceId
-      const pinned = own ? undefined : this.voicesService.resolve(doc.playback[0]?.voiceId, chunk.language as Lang, await this.voicesService.getPreferences(userId)).id
+      const pinned = own ? undefined : this.voicesService.resolve(doc.playback[0]?.voiceId, chunk.language as Lang, await this.voicesService.getPreferences(userId, doc.id), mainLanguage(doc.language)).id
       data.locked = true
       data.lockedLexicon = { rules: (await lexiconFor(userId)).rules, ...(pinned && { pinnedVoice: pinned }) } as unknown as Prisma.InputJsonValue
       if (pinned) data.voiceId = pinned

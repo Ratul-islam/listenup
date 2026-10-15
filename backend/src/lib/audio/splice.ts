@@ -1,7 +1,7 @@
 import { sentenceTimes } from '../subtitles.js'
 import { pcmToMp3 } from './encode.js'
 import { normalizeMp3 } from './mp3.js'
-import { decodeMp3, pausesIn, type DecodedAudio } from './pauses.js'
+import { decodeMp3, pausesIn, speechBounds, type DecodedAudio } from './pauses.js'
 
 /** A sentence recorded again on its own, to go in place of sentence `index` */
 export interface SentenceReplacement {
@@ -32,13 +32,8 @@ function resample(samples: Float32Array, from: number, to: number) {
 
 /** The speech in a clip, without its own leading and trailing silence */
 function speechOnly(audio: DecodedAudio) {
-  const duration = (audio.samples.length / audio.sampleRate) * 1000
-  const pauses = pausesIn(audio)
-  const leading = pauses.find((p) => p[0] <= 40)
-  const trailing = pauses.find((p) => p[1] >= duration - 40 && p !== leading)
-  const start = leading ? Math.max(leading[1] - EDGE_KEEP_MS, 0) : 0
-  const end = trailing ? Math.min(trailing[0] + EDGE_KEEP_MS, duration) : duration
-  return audio.samples.subarray(toSamples(start, audio.sampleRate), Math.max(toSamples(end, audio.sampleRate), toSamples(start, audio.sampleRate)))
+  const { startMs, endMs } = speechBounds(audio, EDGE_KEEP_MS, EDGE_KEEP_MS)
+  return audio.samples.subarray(toSamples(startMs, audio.sampleRate), toSamples(endMs, audio.sampleRate))
 }
 
 function toPcm16(samples: Float32Array) {

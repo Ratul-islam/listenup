@@ -71,9 +71,10 @@ export class TranslationService {
     private readonly usageService: UsageService,
   ) {}
 
-  private async translateBatch(items: string[], language: Lang): Promise<string[]> {
+  private async translateBatch(userId: string, items: string[], language: Lang): Promise<string[]> {
     const reply = await chatCompletion({
       model: env.OPENROUTER_TEXT_MODEL,
+      userId,
       system:
         `You translate documents that will be read aloud. Translate every string in "items" into ${TARGET_NAMES[language]}. ` +
         'Keep the meaning, tone, names and numbers. Do not add, merge, split, summarise or drop items, and do not add notes. ' +
@@ -93,7 +94,7 @@ export class TranslationService {
     // The model lost count: halve the batch until each part comes back whole
     if (items.length > 1) {
       const half = Math.ceil(items.length / 2)
-      return [...(await this.translateBatch(items.slice(0, half), language)), ...(await this.translateBatch(items.slice(half), language))]
+      return [...(await this.translateBatch(userId, items.slice(0, half), language)), ...(await this.translateBatch(userId, items.slice(half), language))]
     }
     throw new AppError("Couldn't translate part of this document.", 502, 'PROVIDER_ERROR')
   }
@@ -113,7 +114,7 @@ export class TranslationService {
       const worker = async () => {
         while (next < batches.length) {
           const i = next++
-          translated[i] = await this.translateBatch(batches[i], language)
+          translated[i] = await this.translateBatch(doc.userId, batches[i], language)
         }
       }
       await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker))

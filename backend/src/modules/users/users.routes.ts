@@ -1,12 +1,13 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { prisma } from '../../config/db.js'
+import { createOwnVoiceService } from '../own-voice/own-voice.factory.js'
 import { UsersRepository } from './users.repository.js'
 import { UsersService } from './users.service.js'
 import { UsersController } from './users.controller.js'
 import { updateProfileSchema } from './users.schema.js'
 
 const usersRoutes: FastifyPluginAsyncZod = async (app) => {
-  const controller = new UsersController(new UsersService(new UsersRepository(prisma)))
+  const controller = new UsersController(new UsersService(new UsersRepository(prisma), createOwnVoiceService()))
 
   // Every users route requires a valid access token
   app.addHook('preHandler', app.verifyAccess)

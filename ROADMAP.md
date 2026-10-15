@@ -18,10 +18,12 @@ The full business research, with cost charts and a profit calculator, is on the 
 | 6 | Offline downloads (Plus and Pro) | ✅ Done |
 | + | Summary and quiz, daily digest, voice search, voice-service resilience | ✅ Done |
 | + | Ads for Free users, invite a friend, private podcast feed (Plus and Pro), 5 more languages | ✅ Done |
-| + | "Make it expressive" redesign: story styles, an AI director that knows the characters, and four easy ways to add emotions | ✅ Built. Not yet heard on the phone |
+| + | "Make it expressive" redesign: story styles, an AI director that knows the characters, and easy ways to add emotions | ✅ Built. Reworked 11 Oct: a marked line is voiced on its own, because directing it inside one request didn't work when measured. 13 Oct: whispers use the voice's own whisper mark, and angry, shouted, sad and frightened lines are measured and made again when they miss. Not yet heard on the phone |
+| + | Character voices: each character reads their own lines, cast by AI, changeable in a Cast sheet (part of "Make it expressive") | ✅ Built 11 Oct. Reworked the same day for steadiness: even volume, one narrator voice where characters speak, one fixed manner per character, the whole book searched for its cast, exact timing at each voice change. Checked by an audio model, not yet heard on the phone |
 | + | Kokoro on your own server for Natural voices, with OpenRouter as backup | ✅ Built and tested on your PC. Hosting not chosen |
 | + | A new Voices page, the login sign-out fix, real app icons, EAS build profiles | ✅ Built. Release checklist in [RELEASE.md](RELEASE.md) |
 | + | Natural voices on the phone: Kokoro-82M downloaded after install, free and unlimited | ✅ Built 7 Oct. Not yet tried on a phone; the voice package isn't uploaded yet |
+| + | Interface upgrade: a plain home page, a new player page, faces for the voices, cover pictures in Explore | ✅ Built 12 Oct. Seen in a browser at phone size with stand-in data, not yet on a phone |
 | 7 | Launch kit (store listing, marketing) | ⏸ On hold |
 | — | Statistics and owner dashboard | ⏸ On hold |
 
@@ -188,6 +190,7 @@ The limits are set in [`backend/src/modules/plans/plan-catalog.ts`](backend/src/
   - select text in the transcript with normal Android handles
   - paint mode for many lines
   - "say it in your own words", typed or spoken
+  - "say it yourself": record the line your way; AI listens once and the voice follows your feeling, speed and pauses
 - **Your own Kokoro** (`KOKORO_URL`):
   - Natural voices are made on your Kokoro-FastAPI server first, at 2 requests at once at most; the rest, or everything when it's down, goes to OpenRouter
   - local audio counts as $0 in the spending caps
@@ -224,7 +227,8 @@ For creators, the main target. Studio is now the script workspace; the settings 
 
 | Endpoint | Does |
 |---|---|
-| `POST /documents` | Adds anything: `{ from: 'text' \| 'url' \| 'upload' \| 'digest', …, script? }` (replaces `/documents/text`, `/url`, `/uploads/:id/complete`, `/digest`) |
+| `POST /documents` | Adds anything: `{ from: 'text' \| 'url' \| 'upload' \| 'digest' \| 'catalog', …, script? }` (replaces `/documents/text`, `/url`, `/uploads/:id/complete`, `/digest`) |
+| `GET /catalog` | Explore's free classics, and which are on the listener's shelf |
 | `POST /documents/uploads` | Signed upload link (step 1 of a file upload) |
 | `GET /documents?view=shelf\|scripts` | The Soundshelf or Studio's scripts |
 | `GET / PATCH / DELETE /documents/:id` | One document; `PATCH` also takes `script: true/false` |
@@ -234,6 +238,7 @@ For creators, the main target. Studio is now the script workspace; the settings 
 | `POST /documents/:id/replace` | Find and replace; a preview of parts and cost unless `apply: true` |
 | `GET /documents/:id/parts/:index/audio` | A part's audio (was `/playback/:id/chunks/:index/audio`) |
 | `POST /documents/:id/parts/:index/direction` | "Say it like…" (was `/expressions/…/describe`) |
+| `POST /documents/:id/parts/:index/delivery` | "Say it yourself": a recording of the words (base64). It's measured and listened to once and not kept; the measurements are kept with the document, and the voice is shaped to them (13 Oct) |
 | `PUT /documents/:id/narration`, `POST /documents/:id/expressive`, `DELETE /documents/:id/expressions` | Story style, Make it expressive, remove emotions |
 | `GET / POST /documents/:id/export` | MP3 + SRT + VTT, with what voicing it would cost |
 | `GET / POST /documents/:id/offline`, `GET …/offline/manifest` | Offline downloads |
@@ -244,7 +249,149 @@ For creators, the main target. Studio is now the script workspace; the settings 
 
 The old paths are gone, so the backend and app must be deployed together.
 
-### Database migrations (all applied to Supabase, except the newest)
+### Shorter gaps between paragraphs, and MP3s that save themselves (8 October)
+
+- **Why the player paused after every paragraph:** each paragraph is its own audio file, and every file came with silence at both ends (Kokoro: about 0.34 s before and 0.24 s after, measured on 129 clips), plus the player's change of file. Voicing wasn't the cause: a paragraph takes about 7 s to voice and plays for about 30 s.
+- **Your choice: fix the gaps, not streaming.** Streaming would have removed only the change of file, needed a rewrite of seeking and highlighting, and stalled the same way when voicing is slow. expo-audio's playlist player has no lock-screen controls, so it wasn't an option.
+- **What changed:**
+  - New clips keep only 60 ms of silence before the speech and 140 ms after (`lib/audio/trim.ts`), so a paragraph change is about 0.4 s, including the change of file.
+  - Clips already stored are trimmed once with `pnpm audio:trim-silence --apply`. It cuts whole MP3 frames, so nothing is re-encoded.
+  - MP3 exports put an even 0.6 s between parts, whether a clip was trimmed or not (`EXPORT_VERSION` 4).
+  - Voice notes get 0.4 s before "Made with ListenUp".
+  - The server voices the next two paragraphs side by side, not one after the other.
+  - The app swaps in the next file before the screen updates, and lets go of preloaded files once they play. expo-audio kept every one in memory, about 18 MB an hour.
+- **MP3 exports, a whole book at a time:**
+  - An export runs in 10-minute steps, so it never meets the queue's time limit. Two exports of a 4,237-part book had ended with "job timed out".
+  - A part the voice service fails on is tried 3 times. When one fails for good, nothing goes on voicing in the background (before, the other two voicing loops kept going, and each retry started more).
+  - Export and download jobs send a heartbeat (pg-boss `heartbeatSeconds: 60`), so a job whose process died, for example in a deploy, is retried within a couple of minutes.
+  - One stalled for 5 minutes also carries on in a new job, up to 5 times, unless it's only waiting its turn in the queue.
+  - Offline downloads work the same way.
+  - A voice host that stalls partway through sending the audio now counts as a timeout, so the other host is tried.
+- **Your choice: the MP3 saves itself.**
+  - Subtitles and "also save the script" are picked before "Make MP3", and the folder on first use.
+  - The app follows the export wherever you are and saves the files the moment they're ready, with a "Saved" message.
+  - If the app was closed, it saves on the next launch (`features/exports/lib/export-runner.ts`).
+  - Studio's Export button shows the progress.
+  - A push notification was the other option; it needs Firebase set up.
+
+### Voices page, one level at a time (8 October)
+
+- Your choice, "Level tabs": the language chips and an Expressive / Natural / Phone switch stay at the top, and only that level's voices scroll beneath (7 at most). It opens on the level of the current voice, which a dot marks.
+- The same list is used on the Voices page, in the player's and Studio's voice sheets, and for a part's own voice.
+
+### Explore: free classics (8 October)
+
+- **Your choice:** Explore is a shelf of free, out-of-copyright classics. It was a voice sampler, which the Voices page now does better.
+- **What's in it:** 18 titles (`modules/catalog/catalog.data.ts`).
+  - Bangla: Kabuliwala, The Postmaster, Chhuti, Mahesh, Bilasi, Abol Tabol, Devdas, Kapalkundala.
+  - English: The Tell-Tale Heart, The Gift of the Magi, The Happy Prince, The Fall of the House of Usher, Gitanjali, Alice, Sherlock Holmes, The Jungle Book, Frankenstein, Pride and Prejudice.
+  - Short listens (under an hour) come first, as covers; books follow.
+- **How a title is added:** "Listen" adds it to the shelf as a Book, waits until it's ready, and plays it.
+  - The text is fetched from Project Gutenberg or Wikisource the first time anyone adds a title, cleaned (no licence header, contents or page numbers), and kept at `catalog/v1/<id>.txt`.
+  - Everyone after that shares it, so the parts, and the audio, are the same for all.
+  - Adding a title twice opens the first. If the source is down, the import retries, and "Listen" tries again.
+- **Adding titles:** add an entry to the catalog and check the cleaned text. Only public-domain works (see BUSINESS.md, Policies).
+- **Also fixed:** Node gave up on IPv4 after 250 ms and waited on unreachable IPv6, so far-away hosts like Gutenberg timed out. Connection attempts now get 1 s each (`config/network.ts`).
+- "Meet the voices" stays at the bottom of Explore as a row of faces you can tap to hear.
+
+### Explore Community and the monthly contest (8 October)
+
+- **Your choices:**
+  - Content: writings plus short AI voice clips.
+  - Winners: picked automatically from hearts, with fraud rules.
+  - Moderation: an AI check plus reports.
+  - Prizes: the top 3 per language board win 60 / 30 / 15 Expressive minutes; you can set a theme each month.
+- **Explore** has a Classics / Community switch. Community shows: a "you won" card, the contest card, Your posts, voice clips (tap to hear), and New writing.
+- **Publishing a writing** (`modules/community`):
+  - Done from the ⋯ menu of your own text: **Publish to Explore**.
+  - Publishing makes a **frozen copy** owned by the writer and never shown on a shelf (`Publication.masterId`).
+  - Every part is locked with the writer's pronunciations and has its voice fixed: a character voice, or the writer's voice for each language.
+  - A background job (`community.publish`) runs the AI check (`moderation.ts`), then voices any missing parts from the writer's minutes.
+- **Listening:**
+  - `POST /documents { from: 'community', id }` gives the listener a copy (`Document.publicationId`) set to the writer's voice. Its parts give the same speech, so they reuse the shared audio.
+  - Copies can't be exported, translated, re-read or published.
+  - Unpublishing deletes the frozen copy, which deletes the publication, which deletes every copy.
+- **Clips:**
+  - The player's line sheet has **Post this line to Explore**. The clip is voiced like a voice note (`PlaybackService.voiceClip`) and keeps its `AudioBlob` while it's published.
+  - Allowed from your own writing and from the classics (credited).
+- **Hearts and the contest:**
+  - A writing needs half of it, or 2 minutes, of real listening before it can be hearted (`PlaybackState.listenedSec`).
+  - Boards are bn / en / other. A heart counts only from a confirmed-email account at least 7 days old when it hearted.
+  - A winner needs 3 counted hearts.
+  - The hourly `community.settle-contests` pays a day after the month ends (`ContestWin`, `bonusExpressiveSec`) and emails the winners.
+- **Safety:**
+  - Report: 7 reasons; 3 reports set it to HIDDEN.
+  - Block writer, and unblock in Profile.
+  - Community review in Profile for `ADMIN_EMAILS`: restore, remove (also off every shelf), re-publish a wrong rejection, and the month's theme.
+  - Pen names are unique ignoring case.
+  - The Community rules page is in Legal.
+- **API:**
+
+| Method | Path | What |
+|---|---|---|
+| GET | `/community?kind=writing\|clip&cursor=` | Newest live pieces, without blocked writers or ones you reported |
+| GET | `/community/preview?documentId=&voiceId=` | Can it be published, what's left to voice, this month's contest |
+| POST | `/community` | Publish `{ kind: 'writing', documentId, title, voiceId, contest, ownWork: true, penName? }` or `{ kind: 'clip', documentId, chunkIndex, start, end, voiceId?, penName? }` |
+| GET | `/community/mine`, `/community/:id` | Your posts with their status; one piece (with `heartAfterSec`) |
+| DELETE | `/community/:id` · POST `/community/:id/retry` | Unpublish · try again after FAILED |
+| PUT/DELETE | `/community/:id/heart` | Heart / un-heart |
+| POST | `/community/:id/report`, `/community/:id/block` | Report (reason, note) · block its writer |
+| GET/DELETE | `/community/blocks`, `/community/blocks/:userId` | Blocked writers · unblock |
+| GET/PUT | `/community/profile` | Pen name, rules accepted, `isAdmin` |
+| GET | `/community/:id/audio` | A clip's audio link (counts a play) |
+| GET | `/community/contest` · POST `/community/contest/wins/seen` | Theme, boards, your entry, last month's winners, unseen wins |
+| GET/POST/PUT | `/community/review`, `/community/review/:id`, `/community/contests/:month/theme` | The team's review (ADMIN_EMAILS) |
+
+### Margin fixes (9 October)
+
+- Translation in reduced-price countries: Plus 250k and Pro 750k characters a month (`Allowance.translateChars` in `plan-catalog.ts`).
+- Text AI counts in the daily caps:
+  - `lib/openrouter.ts` asks for usage and calls a spend guard that `createUsageService()` registers (`usage/text-spend.ts`)
+  - every call site passes `userId`
+  - cost comes from OpenRouter's report plus 5.5%, or from a price table in `voice-pricing.ts`
+- Free caps: 200 OCR pages and 8 digests a month (`monthlyOcrPages` and `monthlyDigests`, counted in `UsageMonth.ocrPages` and `digests`). The page check runs before the OCR starts.
+- Ads give 3 Natural minutes, and invites 5 Expressive, in reduced-price countries (`AD_REWARD_MINUTES` and `INVITE_REWARD_MINUTES` per region).
+  - Free users are placed by the phone's time zone: the app's `X-Time-Zone` header, saved by `plugins/time-zone.ts` to `User.timeZone`, read by `rewardRegionFor`.
+  - The Plans screen uses the same region before a purchase.
+
+### Home-screen widget (9 October)
+
+- **Your choices:** the `react-native-android-widget` library, one resizable widget, and ▶ opens the app and plays. (Ads and the private podcast, from the same list, were built on 5 October.)
+- **The widget, "Continue listening":**
+  - small: ▶, the title and the percentage
+  - larger: the title, author, time left, a progress bar, ▶, and a "Today's digest" row
+  - otherwise "Nothing playing yet" (opens Explore) or "Sign in"
+  - it follows the phone's light or dark mode
+- **Code:**
+  - `features/widget/continue-widget.tsx` (layout), `widget-task-handler.tsx` (draws it from the saved snapshot, also with the app closed), `widget-snapshot.ts` (`home-widget.json`), `home-widget.ts` (redraws it, and loads the library only when the build has it)
+  - `use-home-widget-sync.ts` (in the app layout: the shelf's continue item); the sign-out in the auth store clears it
+  - `index.ts` is the app entry now, and registers the task
+- **Taps:** `listenup://listen?doc=<id>[&play=1]` and `?digest=1` go to `app/(app)/listen.tsx`, which opens the player with the shelf underneath. "Nothing playing yet" opens `listenup://explore`.
+
+### Interface upgrade (12 October)
+
+- **Your choices:** the player is an open page where tapping a line opens that line's tools; the voices get drawn faces; writers add their own cover pictures; the home page keeps Continue listening, Folders and the type filters.
+- **Home (Soundshelf):** no greeting or large title. Search and the account picture are the top row. Then one filled violet card, folders as a row of pills, and the type filters with Sort beside them. Every item has a cover in its own colour with a mark for its type (`document-cover.tsx`). Today's digest moved to the Import page.
+  - The card is the player on this page: it shows what's in the player, live. While it's in view the mini player stays away (`shelf-ui.store.ts`), so there's never two.
+- **Player:**
+  - The text is an open page, a line to a sentence (`transcript.tsx`). The line being read grows about a fifth larger on a violet band; lines are laid out narrower than the page so growing never re-wraps a word.
+  - The page glides to each new line (`moveTo`, eased on the UI thread), from where each part's cell and each line report they sit.
+  - The page is built from the line being read downward (the part before it above), placed while hidden and then shown, so it opens on the right line part-way into a document. Text that hasn't been drawn has no known height, and any of it above the line would push the line as it was measured. Earlier text comes in, eight parts at a time, on scrolling back to the top (or tapping **Earlier text** there); a jump far away builds the page again at the new place.
+  - The line being read grows into the gaps around it and never pushes its neighbours, so nothing is laid out again while the voice moves. Lines are plain views until the voice reaches them.
+  - The server sends the timing of the part being resumed with the document (`anchors` on that part in `GET /documents/:id/script`), so the right line is known before any audio is asked for; without it the page waits up to 0.7 s for the audio's timing.
+  - Tap a line and its tools open under it (`line-tools.tsx`): Play, Feeling, Say it, and ⋯ (describe it, choose some words, voice note, post to Explore).
+  - One panel under the page (`player-dock.tsx`): the progress bar, the playback buttons, and four named tools: the voice (the face of whoever is speaking), Feeling, Say it, Expressive.
+  - "Say it yourself" opens in one tap from either place. Paint mode and word choosing put their tools in the same panel.
+  - What a line or the panel is doing is kept in `store/player-ui.store.ts`.
+- **Sheets (`action-sheet.tsx`):** they move up with the keyboard, rise over a fading backdrop, keep their contents while closing, and can be dragged down by their top.
+- **Voices:** every built-in voice has a drawn face (`frontend/assets/voices`, made by `tools/voice-faces`). A voice the listener made wears their account picture. The faces show everywhere a voice does.
+- **Explore:** a writing can have a cover picture.
+  - `POST /community` takes `cover` (base64). `lib/image/cover.ts` checks it is a real JPEG, PNG or WebP, cuts it to 600×840 and saves it again as a JPEG under `covers/<user>/`.
+  - The AI check looks at the cover with the text; a cover that fails is dropped and the writer is told in Your posts.
+  - Community items carry `coverUrl`, a link that lasts a day. New writing is shown as covers, two to a row.
+- **Voice switching:** choosing a voice after hearing its sample now starts playing in the new voice (it used to stay paused), and closing the list without choosing carries on. Changing a character's voice stops their line at once.
+
+### Database migrations (applied to Supabase, except the last)
 
 | Migration | Adds |
 |---|---|
@@ -254,7 +401,15 @@ The old paths are gone, so the backend and app must be deployed together.
 | `20261004230000_study_digest` | `StudyAid`, `Document.digestDay` |
 | `20261005120000_ads_invites_podcast` | `AdReward`, `UsageMonth.bonusNaturalSec`, invite fields and `podcastToken` on `User`, `Document.podcastAddedAt` |
 | `20261005150000_narration_style` | `Document.narrationStyle`, `narrationStrength`, `narrationBrief`, and `DocumentChunk.narration` |
-| `20261007150000_creator_studio` | **Not applied yet.** `Pronunciation`; on `Document`: `isScript`, `editedAt`, `voicedSec`; on `DocumentChunk`: `take`, `sentenceTakes`, `voiceId`, `pauseAfterMs`, `locked`, `lockedLexicon`; on `AudioClip`: `baseKey`, `sentenceTakes`; on `AudioBlob`: `pauses`, `peaks` |
+| `20261007150000_creator_studio` | `Pronunciation`; on `Document`: `isScript`, `editedAt`, `voicedSec`; on `DocumentChunk`: `take`, `sentenceTakes`, `voiceId`, `pauseAfterMs`, `locked`, `lockedLexicon`; on `AudioClip`: `baseKey`, `sentenceTakes`; on `AudioBlob`: `pauses` |
+| `20261008090000_waveform_peaks` | `AudioBlob.peaks` (Studio waveforms) |
+| `20261008150000_community` | `Publication`, `PublicationVote`, `PublicationReport`, `UserBlock`, `Contest`, `ContestWin`; `penName`, `penNameKey`, `communityRulesAt` on `User`; `Document.publicationId`; `PlaybackState.listenedSec` |
+| `20261009090000_margin_fixes` | `User.timeZone`; `UsageMonth.ocrPages`, `digests` |
+| `20261011120000_own_voice` | `OwnVoice` (a listener's own voice and the recordings it was made from) |
+| `20261012120000_publication_cover` | `Publication.coverKey` (a writing's cover picture) |
+| `20261014120000_creator_studio` | `Document.studio`, `DocumentChunk.delivery`, `SpeakerVoice` |
+| `20261015120000_security_fixes` | `User.emailKey` (one key per inbox, filled in for existing accounts) and `User.listenCreditedUntil`. **Not yet applied to Supabase** |
+| `20261015180000_free_user_share` | `UserSpendDay` (each Free account's spending per day). **Not yet applied to Supabase** |
 
 ---
 
@@ -295,6 +450,14 @@ The old paths are gone, so the backend and app must be deployed together.
 - [ ] **RevenueCat:** create the project, link the Play service account, set up the webhook and copy the keys. Follow [`backend/BILLING.md`](backend/BILLING.md). Then test a purchase with a license tester.
 - [ ] **Closed test.** A new personal Play account needs 12 testers for 14 days before it can publish.
 - [ ] **Legal.** Have the Terms and Privacy pages reviewed, and add licence wording for using Studio exports commercially.
+- [ ] **Home-screen widget (9 October):** make a new development build, then add the widget on the phone and try ▶, the title, Today's digest, resizing, dark mode and signing out.
+- [ ] **Interface upgrade (12 October):** deploy the backend (its migration is applied) and reload the app, then go through the list in [CHANGES.md](CHANGES.md). In Play Console's Data safety form, add photos (cover pictures).
+- [ ] **Community (8 October):**
+  - deploy the backend (`20261008150000_community` is applied to Supabase)
+  - set `ADMIN_EMAILS`
+  - test publishing, clips, hearts, reports and blocks on the phone with two accounts
+  - in Play Console, declare user-generated content and update Data safety
+  - include the Community rules in the legal review
 
 ### Environment variables
 
@@ -308,10 +471,14 @@ The old paths are gone, so the backend and app must be deployed together.
 | Backend (Render) | `ANDROID_PACKAGE` | `dev.ratul.tts` (used in invite links) |
 | Backend (Render) | `PUBLIC_URL` | Must be the public API address: podcast feed links are built from it |
 | Backend | `OPENROUTER_DIRECTOR_PRO_MODEL` | `google/gemini-3.8-flash` (the default): Pro's "Make it expressive" model |
-| Backend (Render) | `GEMINI_API_KEY` | Google AI Studio key on a billed project. Expressive voices skip OpenRouter's fee; exports, downloads and podcast use half-price flex. `GEMINI_FLEX` (`true`) and `GEMINI_FLEX_TIMEOUT_MS` (`90000`) tune it. |
+| Backend | `OPENROUTER_LISTEN_MODEL` | `google/gemini-3.8-flash` (the default): listens to a line you record in "Say it yourself"; must take audio |
+| Backend (Render) | `GEMINI_API_KEY` | Google AI Studio key on a billed project. Expressive voices skip OpenRouter's fee; exports, downloads and podcast use half-price flex. `GEMINI_FLEX` (`true`) and `GEMINI_FLEX_TIMEOUT_MS` (`90000`) tune it. `GOOGLE_API_KEY` is read too. Tier 1: 100 speech requests a day per model. |
+| Backend (Render) | `VERTEX_KEY` | Google Cloud service account JSON key (role Vertex AI User), as a Secret File path (`/etc/secrets/vertex-key.json`) or the JSON itself. Expressive voices are made through Vertex AI first, billed to the Cloud project's credits. `VERTEX_LOCATION` (`global`). |
 | Backend | `KOKORO_URL` | Your Kokoro server, for example `http://kokoro:8880`. Leave it empty to use OpenRouter for Natural voices. |
 | Backend | `KOKORO_MAX_IN_FLIGHT` | `2` (the default): requests your Kokoro server gets at once; the rest go to OpenRouter |
 | Backend | `DATABASE_POOL_MAX`, `QUEUE_POOL_MAX` | `5` and `3` (the defaults). Supabase allows 15 connections in all. |
+| Backend (Render) | `ADMIN_EMAILS` | Your email (comma-separated for more): Community review and the contest theme in Profile |
+| Backend | `COMMUNITY_AI_CHECK` | `true` (the default). `false` skips the AI check before publishing (local tests only) |
 | App | `EXPO_PUBLIC_REVENUECAT_GOOGLE_KEY` | RevenueCat's public Google Play key. If it's empty, plans show "Available soon". |
 | App | `EXPO_PUBLIC_ADMOB_BANNER_ID`, `EXPO_PUBLIC_ADMOB_REWARDED_ID` | AdMob ad unit IDs. If they're empty, development shows test ads and release builds show none. |
 
@@ -320,9 +487,9 @@ The old paths are gone, so the backend and app must be deployed together.
 - **Phase 7, the launch kit:** store listing in six languages, keywords, screenshot captions, launch countries, a launch-week marketing calendar and the 60-day checks.
 - **Statistics and an owner dashboard:** spending is already recorded per day and per model (`SpendDay`), so it can be built on top later.
 
-### Not built yet
+### Built, not yet tried with Google
 
-- **Voice cloning.** It was in the original plan, but the Plans screen doesn't promise it. Decide whether it's still wanted.
+- **Your own voice (Pro), 11 October 2026.** A listener records a passage and a consent sentence, Google makes the voice, and it's chosen like any Expressive voice. Server: `backend/src/modules/own-voice`, `GET / POST / DELETE /own-voice`. App: `frontend/src/features/own-voice`. See [CHANGES.md](CHANGES.md).
 
 ### Watch for
 
@@ -338,6 +505,8 @@ The old paths are gone, so the backend and app must be deployed together.
 ## Features to add next
 
 Ordered by value for effort. None are started.
+
+**Creator edges** (9 October 2026): thirteen creator ideas, researched and split into seven phases, are in [CREATOR-EDGES.md](CREATOR-EDGES.md). Phase 1 starts by letting Studio pack buyers export without a subscription.
 
 ### Reliability and cost
 
@@ -361,7 +530,6 @@ Ordered by value for effort. None are started.
 
 | Feature | Why | Effort |
 |---|---|---|
-| **Home-screen widget** | "Continue listening" and today's digest on the home screen, as a daily reminder. | Medium |
 | **Student or family plan** | A cheaper yearly plan with student verification, or one plan shared by a household. Both raise the share of users who pay in South Asia. | Medium |
 | **iOS and a web reader** | Only after Android pays for itself. The backend is ready; phone voices and payments need iOS-specific work. | Large |
 
@@ -375,3 +543,15 @@ Decide what's next from these numbers, not from guesses:
 - **Hours listened per paying user**, split into Natural and Expressive.
 - **Voice cost per paying user**, compared with what they pay after Google's 15%.
 - **Users still active after 30 days.**
+
+## Built 14 October 2026: creators
+
+| Feature | Status |
+|---|---|
+| Your exports (every MP3, play, save again) | ✅ Built; not tried on a phone |
+| Pitch, speed and tone per script, in the audio | ✅ Built; measured, not heard |
+| Platform and narration type per script, length guide, templates (English and Bangla) | ✅ Built; not tried on a phone |
+| Exports finished at the platform's loudness, default subtitles, AI-label rule | ✅ Built; measured on real exports |
+| Voice translation (Pro) with the speaker's cloned voice | ✅ Built; consent step reached Google, no real voice made yet |
+| Cloned voices (own and speaker) spoken through Vertex | ❓ Untested; needs a real voice first |
+

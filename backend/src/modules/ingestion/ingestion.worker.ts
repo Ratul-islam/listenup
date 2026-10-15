@@ -13,8 +13,9 @@ const IMPORT_BATCH = 8
 /** Consumes document.process (imports) and document.translate jobs */
 export async function startIngestionWorker() {
   const documents = new DocumentsRepository(prisma)
-  const ingestion = new IngestionService(documents)
-  const translation = new TranslationService(documents, ingestion, createUsageService())
+  const usage = createUsageService()
+  const ingestion = new IngestionService(documents, usage)
+  const translation = new TranslationService(documents, ingestion, usage)
 
   // Imports come in bursts (a creator pasting several scripts, many users at once), but each
   // takes only tens of milliseconds. Fetching one job per 2-second poll capped imports at about

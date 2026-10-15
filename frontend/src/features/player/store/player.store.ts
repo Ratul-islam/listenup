@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 
-import type { DocumentSummary, Lang, ReaderChunk } from '@/features/library/types';
+import type { CastMember, DocumentSummary, Lang, ReaderChunk } from '@/features/library/types';
 import type { VoiceTier } from '@/features/voices/api/voices.api';
 import { perLanguage } from '@/lib/languages';
+
+import type { PlayingAudio } from '../lib/sync';
 
 export type PlayerStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -29,6 +31,8 @@ export interface PlayerState {
   documentId: string | null;
   document: DocumentSummary | null;
   chunks: ReaderChunk[];
+  /** Characters with lines, and who reads each; empty when one voice reads everything */
+  cast: CastMember[];
   /** Voice actually used per language (server-resolved) */
   voices: Record<Lang, string>;
   /** Whether those voices can take emotions */
@@ -39,6 +43,10 @@ export interface PlayerState {
   voiceId: string | null;
   /** Where the current chunk's audio came from, e.g. "device" for Natural voices made on this phone */
   source: AudioSource | null;
+  /** The audio in the player and its timing; null while a part is loading */
+  playing: PlayingAudio | null;
+  /** The voice being switched to, until its first audio plays */
+  switchingTo: string | null;
   chunkIndex: number;
   /** Media position inside the current chunk */
   positionMs: number;
@@ -58,12 +66,15 @@ export const initialPlayerState: PlayerState = {
   documentId: null,
   document: null,
   chunks: [],
+  cast: [],
   // Replaced by the server's choices as soon as a document opens
   voices: perLanguage(() => ''),
   expressive: perLanguage(() => false),
   tiers: perLanguage(() => 'natural'),
   voiceId: null,
   source: null,
+  playing: null,
+  switchingTo: null,
   chunkIndex: 0,
   positionMs: 0,
   isPlaying: false,

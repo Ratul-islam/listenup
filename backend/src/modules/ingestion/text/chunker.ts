@@ -1,5 +1,5 @@
 import { CHARS_PER_SECOND, CHUNK_MAX_CHARS, CHUNK_TARGET_CHARS, FIRST_CHUNK_CHARS } from '../../../config/constants.js'
-import { detectLanguage, type Lang, type ScriptLanguages } from './language.js'
+import { detectLanguage, isEnglishPassage, isLatinOnly, READS_ENGLISH, type Lang, type ScriptLanguages } from './language.js'
 
 export interface SentenceSpan {
   start: number
@@ -21,6 +21,9 @@ interface Sentence {
 }
 
 const segmenter = new Intl.Segmenter('en', { granularity: 'sentence' })
+
+// How much of a paragraph must be in a language for its voice to read the paragraph's English too
+const PARAGRAPH_OWN_SHARE = 1 / 3
 
 /**
  * Chunk sizes are set in English characters; languages that say more per
@@ -56,18 +59,37 @@ function splitLong(sentence: string, max: number): string[] {
   return parts
 }
 
+/**
+ * A paragraph's sentences and who reads each. Within a paragraph one voice
+ * reads wherever it can:
+ * - English sentences beside Bangla, Urdu or Hindi ones are read by that
+ *   language's voice, which says English too (see READS_ENGLISH), instead of
+ *   an English voice cutting in for a sentence.
+ * - A paragraph that's wholly English inside a Spanish (French, Italian…)
+ *   document is read by an English voice, not sounded out as Spanish.
+ */
 function toSentences(paragraphs: string[], scripts: ScriptLanguages): Sentence[] {
   const out: Sentence[] = []
   for (const paragraph of paragraphs) {
+    const english = isEnglishPassage(paragraph, scripts.latin)
+    const own: Sentence[] = []
     let first = true
     for (const { segment } of segmenter.segment(paragraph)) {
       const max = sized(CHUNK_MAX_CHARS, detectLanguage(segment, scripts))
       for (const piece of splitLong(segment.trim(), max)) {
         if (!piece) continue
-        out.push({ text: piece, language: detectLanguage(piece, scripts), paragraphStart: first })
+        own.push({ text: piece, language: english ? 'en' : detectLanguage(piece, scripts), paragraphStart: first })
         first = false
       }
     }
+    // The paragraph's own voice, when it reads English too: the one with the most text. It takes the
+    // paragraph's English sentences when a fair share of the paragraph is its own; one Bangla
+    // phrase in a long English paragraph doesn't hand the whole paragraph to the Bangla voice.
+    const share = new Map<Lang, number>()
+    for (const s of own) if (READS_ENGLISH.includes(s.language)) share.set(s.language, (share.get(s.language) ?? 0) + s.text.length)
+    const [reader, chars] = [...share.entries()].sort((a, b) => b[1] - a[1])[0] ?? []
+    const absorbs = !!reader && (chars ?? 0) >= own.reduce((n, s) => n + s.text.length, 0) * PARAGRAPH_OWN_SHARE
+    for (const s of own) out.push(absorbs && isLatinOnly(s.text) ? { ...s, language: reader } : s)
   }
   return out
 }

@@ -6,6 +6,7 @@ import type { RefreshTokenPayload } from '../../plugins/jwt.js'
 import { AppError } from '../../utils/AppError.js'
 import { sha256 } from '../../utils/util.js'
 import type { AuthRepository } from './auth.repository.js'
+import { forgetSession, forgetUserSessions } from './session-check.js'
 
 export interface ClientContext {
   ip?: string
@@ -42,7 +43,8 @@ export class TokenService {
     ctx: ClientContext,
     { familyId = randomUUID(), tokenId = randomUUID() }: { familyId?: string; tokenId?: string } = {},
   ): Promise<AuthTokens> {
-    const accessToken = this.jwt.access.sign({ sub: user.id, email: user.email })
+    // `sid` names the login session, so ending it ends its access tokens too (verifyAccess)
+    const accessToken = this.jwt.access.sign({ sub: user.id, email: user.email, sid: familyId })
     const refreshToken = this.jwt.refresh.sign({ sub: user.id, jti: tokenId, fid: familyId })
     const refreshTokenExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000)
 
@@ -92,6 +94,7 @@ export class TokenService {
       if (stored.replacedById) {
         if (await this.inReuseGrace(stored)) return { user: stored.user, tokens: await this.issue(stored.user, ctx, { familyId: stored.familyId }) }
         await this.authRepository.revokeRefreshTokenFamily(stored.familyId)
+        forgetSession(stored.familyId)
         throw reusedRefreshToken()
       }
       throw invalidRefreshToken()
@@ -105,6 +108,7 @@ export class TokenService {
       const latest = await this.authRepository.findRefreshTokenById(stored.id)
       if (latest && (await this.inReuseGrace(latest))) return { user: stored.user, tokens: await this.issue(stored.user, ctx, { familyId: stored.familyId }) }
       await this.authRepository.revokeRefreshTokenFamily(stored.familyId)
+      forgetSession(stored.familyId)
       throw reusedRefreshToken()
     }
 
@@ -115,10 +119,13 @@ export class TokenService {
   // Logout: ends the session the token belongs to
   async revoke(refreshToken: string) {
     const stored = await this.authRepository.findRefreshTokenByHash(sha256(refreshToken))
-    if (stored) await this.authRepository.revokeRefreshTokenFamily(stored.familyId)
+    if (!stored) return
+    await this.authRepository.revokeRefreshTokenFamily(stored.familyId)
+    forgetSession(stored.familyId)
   }
 
   async revokeAllForUser(userId: string) {
     await this.authRepository.revokeAllUserRefreshTokens(userId)
+    forgetUserSessions(userId)
   }
 }

@@ -11,6 +11,14 @@ export class UsersRepository {
     return this.db.user.findUnique({ where: { email } })
   }
 
+  /** An account on the same inbox under any spelling (utils/email-key.ts); a verified one first */
+  findByEmailKey(emailKey: string, { verifiedOnly = false, exceptId }: { verifiedOnly?: boolean; exceptId?: string } = {}) {
+    return this.db.user.findFirst({
+      where: { emailKey, ...(verifiedOnly && { emailVerifiedAt: { not: null } }), ...(exceptId && { id: { not: exceptId } }) },
+      orderBy: [{ emailVerifiedAt: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+    })
+  }
+
   create(data: Prisma.UserCreateInput) {
     return this.db.user.create({ data })
   }

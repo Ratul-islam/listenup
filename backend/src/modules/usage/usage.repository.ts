@@ -5,6 +5,8 @@ export interface UsageIncrement {
   naturalSec: number
   expressiveSec: number
   translatedChars?: number
+  ocrPages?: number
+  digests?: number
 }
 
 export class UsageRepository {
@@ -30,6 +32,8 @@ export class UsageRepository {
         naturalSec: { increment: inc.naturalSec },
         expressiveSec: { increment: inc.expressiveSec },
         translatedChars: { increment: inc.translatedChars ?? 0 },
+        ocrPages: { increment: inc.ocrPages ?? 0 },
+        digests: { increment: inc.digests ?? 0 },
       },
     })
   }
@@ -45,6 +49,19 @@ export class UsageRepository {
 
   spendOn(day: string) {
     return this.db.spendDay.findMany({ where: { day }, select: { bucket: true, costMicros: true } })
+  }
+
+  async userSpendOn(userId: string, day: string) {
+    const row = await this.db.userSpendDay.findUnique({ where: { userId_day: { userId, day } }, select: { costMicros: true } })
+    return row?.costMicros ?? 0
+  }
+
+  addUserSpend(userId: string, day: string, costMicros: number) {
+    return this.db.userSpendDay.upsert({
+      where: { userId_day: { userId, day } },
+      create: { userId, day, costMicros },
+      update: { costMicros: { increment: costMicros } },
+    })
   }
 
   addSpend(day: string, bucket: string, model: string, inc: { seconds: number; characters: number; costMicros: number }) {

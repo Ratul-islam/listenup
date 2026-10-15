@@ -11,12 +11,20 @@ import { expressionsApi, type NarrationChoice } from '../api/expressions.api';
 
 const POLL_MS = 3000;
 
-/** Reloads the open document's emotions into the player (if it's still open) */
-export async function refresh(documentId: string) {
+/**
+ * Reloads the open document's emotions into the player (if it's still open).
+ * With `replay`, the part playing is voiced again from the line being heard.
+ * Returns whether that replay started.
+ */
+export async function refresh(documentId: string, { replay = false } = {}) {
   const { voiceId } = usePlayerStore.getState();
   const reader = await documentsApi.script(documentId, voiceId ?? undefined);
-  if (usePlayerStore.getState().documentId === documentId) audioEngine.applyReader(reader);
+  if (usePlayerStore.getState().documentId !== documentId) return false;
+  return audioEngine.applyReader(reader, { replay });
 }
+
+/** When a change will be heard: now if the part playing is being voiced again, otherwise from the next one */
+const heard = (replaying: boolean) => (replaying ? 'Replaying this part so you hear it.' : 'You’ll hear it from the next part.');
 
 /**
  * "Make it expressive" for the open document: starts AI suggestions, follows
@@ -41,12 +49,21 @@ export function useAutoExpression() {
           done = true;
           clearInterval(timer);
           if (doc.autoExpression === 'DONE') {
-            await refresh(documentId);
+            const replaying = await refresh(documentId, { replay: true });
+            const { chunks, document, cast } = usePlayerStore.getState();
+            const lines = chunks.reduce((n, c) => n + c.expressions.emotions.filter((m) => m.ai).length, 0);
+            const voices = cast.filter((c) => c.ownVoice).length;
+            const directed = [lines ? `${lines} ${lines === 1 ? 'line' : 'lines'} directed` : '', voices ? `${voices} ${voices === 1 ? 'character has' : 'characters have'} their own voice` : ''].filter(Boolean);
             haptics.success();
-            toast.show({ variant: 'success', label: 'Emotions added', description: "You'll hear them from the next part. Hold any line to change one." });
+            // Say what was actually done: nothing to direct is a result too, not a silent success
+            toast.show(
+              directed.length
+                ? { variant: 'success', label: directed.join(', '), description: `${heard(replaying)} ${voices ? 'Change who reads whom under More.' : 'Hold any line to change it.'}` }
+                : { label: 'No lines needed directing', description: document?.narration?.style ? `The story’s style still colours every line. ${heard(replaying)}` : 'This text reads best plainly. You can still add feelings yourself.' },
+            );
           } else {
             usePlayerStore.setState((s) => (s.document ? { document: { ...s.document, autoExpression: doc.autoExpression } } : {}));
-            toast.show({ variant: 'danger', label: "Couldn't add emotions", description: 'Try again in a moment.' });
+            toast.show({ variant: 'danger', label: "Couldn't direct the story", description: 'Try again in a moment.' });
           }
         })
         .catch(() => {}); // keep polling through network blips
@@ -61,11 +78,11 @@ export function useAutoExpression() {
     if (!documentId) return false;
     setBusy(true);
     try {
+      // The AI directs from where the listener is, so say where that is first
+      await audioEngine.report();
       const document = await expressionsApi.startAuto(documentId, choice);
       usePlayerStore.setState({ document });
-      // A chosen style plays from the next part right away
-      if (choice.style !== 'auto') await refresh(documentId);
-      toast.show({ label: 'Directing your story…', description: 'AI is reading ahead. Keep listening.' });
+      toast.show({ label: 'Directing your story…', description: 'AI is reading ahead. You’ll hear it in a moment.' });
       return true;
     } catch (e) {
       toast.show({ variant: 'danger', label: getErrorMessage(e) });
@@ -82,8 +99,8 @@ export function useAutoExpression() {
     try {
       const document = await expressionsApi.setNarration(documentId, choice);
       usePlayerStore.setState({ document });
-      await refresh(documentId);
-      toast.show({ label: choice.style ? 'Style changed' : 'Style turned off', description: 'You’ll hear it from the next part.' });
+      const replaying = await refresh(documentId, { replay: true });
+      toast.show({ label: choice.style ? 'Style changed' : 'Style turned off', description: heard(replaying) });
       return true;
     } catch (e) {
       toast.show({ variant: 'danger', label: getErrorMessage(e) });
@@ -98,8 +115,8 @@ export function useAutoExpression() {
     setBusy(true);
     try {
       await expressionsApi.clear(documentId, only);
-      await refresh(documentId);
-      toast.show({ label: only === 'ai' ? 'AI emotions removed' : 'All emotions removed' });
+      const replaying = await refresh(documentId, { replay: true });
+      toast.show({ label: only === 'ai' ? 'AI emotions removed' : 'All emotions removed', description: heard(replaying) });
     } catch (e) {
       toast.show({ variant: 'danger', label: getErrorMessage(e) });
     } finally {

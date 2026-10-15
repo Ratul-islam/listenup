@@ -34,10 +34,10 @@ export function Scrubber() {
     });
 
   return (
-    <View className="gap-1">
+    <View>
       <GestureDetector gesture={pan}>
         <View
-          className="h-8 justify-center"
+          className="h-7 justify-center"
           onLayout={(e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width)}
           accessibilityRole="adjustable"
           accessibilityLabel="Playback position"
@@ -55,8 +55,8 @@ export function Scrubber() {
         </View>
       </GestureDetector>
       <View className="flex-row justify-between">
-        <Text variant="caption" style={{ fontVariant: ['tabular-nums'] }}>{formatClock(shown)}</Text>
-        <Text variant="caption" style={{ fontVariant: ['tabular-nums'] }}>-{formatClock((totalMs - shown) / speed)}</Text>
+        <Text className="text-[12px] font-medium text-muted" style={{ fontVariant: ['tabular-nums'] }}>{formatClock(shown)}</Text>
+        <Text className="text-[12px] font-medium text-muted" style={{ fontVariant: ['tabular-nums'] }}>-{formatClock((totalMs - shown) / speed)}</Text>
       </View>
     </View>
   );
